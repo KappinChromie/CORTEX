@@ -17,11 +17,14 @@ interface GraphCanvas3DProps {
   hoveredNode: Node | null;
   onHoverNode: (node: Node | null) => void;
   frameAllTrigger: number;
+  resetViewTrigger: number;
+  cameraControlMode: 'orbit' | 'fly';
   isOrbitAnimating: boolean;
   isOrbitRingsVisible: boolean;
   isStarGlowVisible: boolean;
   onDoubleClickNode?: (node: Node, shiftKey: boolean) => void;
   dimmedNodeIds?: Set<string>;
+  onClearIsolation?: () => void;
 }
 
 // Camera controller that smoothly animates camera to selected node or frames all nodes
@@ -29,27 +32,38 @@ function CameraController({
   selectedNode,
   positionsRef,
   frameAllTrigger,
+  resetViewTrigger,
   nodes,
 }: {
   selectedNode: Node | null;
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
   frameAllTrigger: number;
+  resetViewTrigger: number;
   nodes: Node[];
 }) {
   const { camera } = useThree();
   const targetCamPos = useRef<THREE.Vector3 | null>(null);
   const targetLookAt = useRef<THREE.Vector3 | null>(null);
 
-  // Focus on selected node
+  // Focus on selected node (search-to-fly or direct selection)
   useEffect(() => {
     if (selectedNode) {
       const pos = positionsRef.current.get(selectedNode.id);
       if (pos) {
         targetLookAt.current = new THREE.Vector3(pos[0], pos[1], pos[2]);
-        targetCamPos.current = new THREE.Vector3(pos[0], pos[1] + 35, pos[2] + 95);
+        const dist = Math.max(35, getNodeSize(selectedNode) * 5.0);
+        targetCamPos.current = new THREE.Vector3(pos[0], pos[1] + dist * 0.4, pos[2] + dist * 1.2);
       }
     }
   }, [selectedNode, positionsRef]);
+
+  // Reset view to default camera position
+  useEffect(() => {
+    if (resetViewTrigger > 0) {
+      targetLookAt.current = new THREE.Vector3(0, 0, 0);
+      targetCamPos.current = new THREE.Vector3(0, 160, 800);
+    }
+  }, [resetViewTrigger]);
 
   // Frame all visible nodes on trigger
   useEffect(() => {
@@ -90,6 +104,79 @@ function CameraController({
         targetLookAt.current = null;
       }
     }
+  });
+
+  return null;
+}
+
+// Free-fly camera controller (WASD + mouse look, Q/E up/down, hold Shift for speed boost)
+function FreeFlyController({ enabled }: { enabled: boolean }) {
+  const { camera, gl } = useThree();
+  const keysDown = useRef<Record<string, boolean>>({});
+  const isMouseDown = useRef<boolean>(false);
+  const prevMouse = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const euler = useRef(new THREE.Euler(0, 0, 0, 'YXZ'));
+
+  useEffect(() => {
+    if (!enabled) return;
+    euler.current.setFromQuaternion(camera.quaternion);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      keysDown.current[e.key.toLowerCase()] = true;
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      keysDown.current[e.key.toLowerCase()] = false;
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 0 || e.button === 2) {
+        isMouseDown.current = true;
+        prevMouse.current = { x: e.clientX, y: e.clientY };
+      }
+    };
+    const onMouseUp = () => {
+      isMouseDown.current = false;
+    };
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isMouseDown.current) return;
+      const dx = e.clientX - prevMouse.current.x;
+      const dy = e.clientY - prevMouse.current.y;
+      prevMouse.current = { x: e.clientX, y: e.clientY };
+
+      euler.current.y -= dx * 0.003;
+      euler.current.x = Math.max(-1.4, Math.min(1.4, euler.current.x - dy * 0.003));
+      camera.quaternion.setFromEuler(euler.current);
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    gl.domElement.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMouseMove);
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      gl.domElement.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('mousemove', onMouseMove);
+    };
+  }, [enabled, camera, gl]);
+
+  useFrame((_, delta) => {
+    if (!enabled) return;
+    const isShift = keysDown.current['shift'];
+    const speed = (isShift ? 600 : 200) * delta;
+
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+
+    if (keysDown.current['w']) camera.position.addScaledVector(forward, speed);
+    if (keysDown.current['s']) camera.position.addScaledVector(forward, -speed);
+    if (keysDown.current['d']) camera.position.addScaledVector(right, speed);
+    if (keysDown.current['a']) camera.position.addScaledVector(right, -speed);
+    if (keysDown.current['e']) camera.position.y += speed;
+    if (keysDown.current['q']) camera.position.y -= speed;
   });
 
   return null;
@@ -397,11 +484,14 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
   hoveredNode,
   onHoverNode,
   frameAllTrigger,
+  resetViewTrigger,
+  cameraControlMode,
   isOrbitAnimating,
   isOrbitRingsVisible,
   isStarGlowVisible,
   onDoubleClickNode,
   dimmedNodeIds,
+  onClearIsolation,
 }) => {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
@@ -499,7 +589,10 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
     >
       <Canvas
         camera={{ position: [0, 160, 800], fov: 50, near: 0.1, far: 10000 }}
-        onPointerMissed={() => onSelectNode(null)}
+        onPointerMissed={() => {
+          onSelectNode(null);
+          if (onClearIsolation) onClearIsolation();
+        }}
       >
         <ambientLight intensity={0.6} />
         <pointLight position={[300, 400, 500]} intensity={1.3} />
@@ -522,8 +615,11 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           selectedNode={selectedNode}
           positionsRef={positionsRef}
           frameAllTrigger={frameAllTrigger}
+          resetViewTrigger={resetViewTrigger}
           nodes={nodes}
         />
+
+        <FreeFlyController enabled={cameraControlMode === 'fly'} />
 
         <NodesLayer
           nodes={nodes}
@@ -561,6 +657,7 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
         <EdgesLayer edges={edges} positionsRef={positionsRef} />
 
         <OrbitControls
+          enabled={cameraControlMode === 'orbit'}
           enableDamping
           dampingFactor={0.05}
           rotateSpeed={0.8}

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { ViewMode, Node } from '../types';
 import { ViewModeSwitch } from './ViewModeSwitch';
-import { Search, Activity, Sparkles, Focus } from 'lucide-react';
+import { Search, Activity, Sparkles, Focus, RotateCcw } from 'lucide-react';
 
 interface HeaderBarProps {
   currentMode: ViewMode;
@@ -17,6 +17,7 @@ interface HeaderBarProps {
   totalNodesCount: number;
   visibleNodesCount: number;
   onFrameAll: () => void;
+  onResetView: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -33,6 +34,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   totalNodesCount,
   visibleNodesCount,
   onFrameAll,
+  onResetView,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -195,6 +197,31 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         >
           <Focus size={12} color="#38bdf8" />
           <span>Frame all (F)</span>
+        </button>
+
+        {/* Reset View Button */}
+        <button
+          onClick={onResetView}
+          title="Reset camera to default view"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            padding: '3px 9px',
+            backgroundColor: 'rgba(51, 65, 85, 0.6)',
+            border: '1px solid rgba(148, 163, 184, 0.25)',
+            borderRadius: '6px',
+            color: '#e2e8f0',
+            fontSize: '11px',
+            fontWeight: 500,
+            cursor: 'pointer',
+            transition: 'background 0.15s',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(71, 85, 105, 0.8)')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'rgba(51, 65, 85, 0.6)')}
+        >
+          <RotateCcw size={12} color="#94a3b8" />
+          <span>Reset view</span>
         </button>
       </div>
 

@@ -3,11 +3,13 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   EnrichedGraphSnapshot,
   Node,
+  NodeKind,
   ViewMode,
 } from './types';
 import { WebLayoutEngine } from './layouts/webLayout';
 import { GraphCanvas3D } from './components/GraphCanvas3D';
 import { HeaderBar } from './components/HeaderBar';
+import { FilterBar } from './components/FilterBar';
 import { SidePanel } from './components/SidePanel';
 import { SourceHealthPanel } from './components/SourceHealthPanel';
 import { Loader2, AlertCircle } from 'lucide-react';
@@ -21,6 +23,7 @@ export const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [dataSource, setDataSource] = useState<'live' | 'demo'>('live');
   const [frameAllTrigger, setFrameAllTrigger] = useState(0);
+  const [resetViewTrigger, setResetViewTrigger] = useState(0);
 
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [hoveredNode, setHoveredNode] = useState<Node | null>(null);
@@ -31,6 +34,30 @@ export const App: React.FC = () => {
   const [isOrbitAnimating, setIsOrbitAnimating] = useState<boolean>(true);
   const [isOrbitRingsVisible, setIsOrbitRingsVisible] = useState<boolean>(true);
   const [isStarGlowVisible, setIsStarGlowVisible] = useState<boolean>(true);
+
+  // Section C declutter & filter state
+  const [isAmbientEnabled, setIsAmbientEnabled] = useState<boolean>(true);
+  const [enabledKinds, setEnabledKinds] = useState<Record<NodeKind, boolean>>({
+    project: true,
+    conversation: true,
+    session: true,
+    artifact: true,
+    task: true,
+    memory: true,
+    skill: true,
+    topic: true,
+    tool: true,
+  });
+  const [showTags, setShowTags] = useState<boolean>(false); // Tags hidden by default
+
+  // Section C neighborhood isolation state
+  const [isolatedState, setIsolatedState] = useState<{
+    centerNodeId: string;
+    hops: 1 | 2;
+  } | null>(null);
+
+  // Section C camera control mode
+  const [cameraControlMode, setCameraControlMode] = useState<'orbit' | 'fly'>('orbit');
 
   // Load snapshot from Tauri backend, static public json, or fallback
   const loadSnapshot = useCallback(async () => {
@@ -67,14 +94,22 @@ export const App: React.FC = () => {
     setFrameAllTrigger((prev) => prev + 1);
   }, []);
 
-  // Listen for keyboard hotkey 'F' to trigger Frame All
+  const handleResetView = useCallback(() => {
+    setResetViewTrigger((prev) => prev + 1);
+  }, []);
+
+  // Listen for keyboard hotkeys (F for Frame All, Esc for clearing isolation/selection, C for camera mode)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (
-        (e.key === 'f' || e.key === 'F') &&
-        !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)
-      ) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key === 'f' || e.key === 'F') {
         handleFrameAll();
+      } else if (e.key === 'Escape') {
+        setIsolatedState(null);
+        setSelectedNode(null);
+      } else if (e.key === 'c' || e.key === 'C') {
+        setCameraControlMode((prev) => (prev === 'orbit' ? 'fly' : 'orbit'));
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -112,6 +147,73 @@ export const App: React.FC = () => {
     }
     return map;
   }, [data]);
+
+  // Count items per kind across all snapshot nodes
+  const kindCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    if (!data?.snapshot.nodes) return counts;
+    for (const node of data.snapshot.nodes) {
+      if (node.kind === 'topic' && node.subkind === 'tag') {
+        counts['tag'] = (counts['tag'] || 0) + 1;
+      } else {
+        counts[node.kind] = (counts[node.kind] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [data]);
+
+  // Filter visible nodes based on active Kind chips, Ambient toggle, and Tag visibility
+  const visibleNodes = useMemo(() => {
+    if (!data?.snapshot.nodes) return [];
+    return data.snapshot.nodes.filter((node) => {
+      // Master Ambient layer check
+      if (node.is_ambient && !isAmbientEnabled) return false;
+      // Kind chips filter
+      if (!enabledKinds[node.kind]) return false;
+      // Tags hidden by default
+      if (node.kind === 'topic' && node.subkind === 'tag') {
+        return showTags;
+      }
+      if (node.hidden_by_default && !showTags) {
+        return false;
+      }
+      return true;
+    });
+  }, [data, isAmbientEnabled, enabledKinds, showTags]);
+
+  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((n) => n.id)), [visibleNodes]);
+
+  // Edges connecting visible nodes
+  const visibleEdges = useMemo(() => {
+    if (!data?.snapshot.edges) return [];
+    return data.snapshot.edges.filter(
+      (e) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to)
+    );
+  }, [data, visibleNodeIds]);
+
+  // Set of node IDs in active neighborhood isolation
+  const isolatedNodeIds = useMemo(() => {
+    if (!isolatedState || !data) return undefined;
+    const set = new Set<string>();
+    set.add(isolatedState.centerNodeId);
+
+    const hop1 = data.neighbors[isolatedState.centerNodeId] || [];
+    for (const id of hop1) set.add(id);
+
+    if (isolatedState.hops === 2) {
+      for (const id1 of hop1) {
+        const hop2 = data.neighbors[id1] || [];
+        for (const id2 of hop2) set.add(id2);
+      }
+    }
+    return set;
+  }, [isolatedState, data]);
+
+  // Center node title for isolation banner
+  const isolatedCenterNodeTitle = useMemo(() => {
+    if (!isolatedState) return undefined;
+    return nodesById.get(isolatedState.centerNodeId)?.title;
+  }, [isolatedState, nodesById]);
 
   // Compute 3D positions using active layout engine (pluggable)
   const positions = useMemo(() => {
@@ -159,8 +261,8 @@ export const App: React.FC = () => {
       <HeaderBar
         currentMode={currentMode}
         onChangeMode={setCurrentMode}
-        nodes={data?.snapshot.nodes || []}
-        edgesCount={data?.snapshot.edges.length || 0}
+        nodes={visibleNodes}
+        edgesCount={visibleEdges.length}
         sharedProjectsCount={data?.snapshot.shared_projects.length || 0}
         scanTimeMs={scanTimeMs}
         onSelectNode={setSelectedNode}
@@ -168,15 +270,32 @@ export const App: React.FC = () => {
         isHealthOpen={isHealthOpen}
         dataSource={dataSource}
         totalNodesCount={data?.snapshot.nodes.length || 0}
-        visibleNodesCount={data?.snapshot.nodes.length || 0}
+        visibleNodesCount={visibleNodes.length}
         onFrameAll={handleFrameAll}
+        onResetView={handleResetView}
+      />
+
+      {/* Top Sub-Bar: Kind Filter Chips & Isolation HUD */}
+      <FilterBar
+        isAmbientEnabled={isAmbientEnabled}
+        onToggleAmbient={() => setIsAmbientEnabled((prev) => !prev)}
+        enabledKinds={enabledKinds}
+        onToggleKind={(kind) =>
+          setEnabledKinds((prev) => ({ ...prev, [kind]: !prev[kind] }))
+        }
+        showTags={showTags}
+        onToggleTags={() => setShowTags((prev) => !prev)}
+        kindCounts={kindCounts}
+        isolatedState={isolatedState}
+        isolatedCenterNodeTitle={isolatedCenterNodeTitle}
+        onClearIsolation={() => setIsolatedState(null)}
       />
 
       {/* Main 3D Canvas */}
       {data && (
         <GraphCanvas3D
-          nodes={data.snapshot.nodes}
-          edges={data.snapshot.edges}
+          nodes={visibleNodes}
+          edges={visibleEdges}
           webPositions={positions}
           hybridLayout={data.hybrid_layout || {}}
           currentMode={currentMode}
@@ -185,24 +304,41 @@ export const App: React.FC = () => {
           hoveredNode={hoveredNode}
           onHoverNode={setHoveredNode}
           frameAllTrigger={frameAllTrigger}
+          resetViewTrigger={resetViewTrigger}
+          cameraControlMode={cameraControlMode}
           isOrbitAnimating={isOrbitAnimating}
           isOrbitRingsVisible={isOrbitRingsVisible}
           isStarGlowVisible={isStarGlowVisible}
+          onDoubleClickNode={(node, shiftKey) => {
+            setIsolatedState({
+              centerNodeId: node.id,
+              hops: shiftKey ? 2 : 1,
+            });
+          }}
+          dimmedNodeIds={isolatedNodeIds}
+          onClearIsolation={() => setIsolatedState(null)}
         />
       )}
 
-      {/* Solar System Visual Controls HUD (Bottom Left) */}
-      {currentMode === 'hybrid' && (
+      {/* Floating HUD Controls (Bottom Left) */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 20,
+          left: 20,
+          zIndex: 40,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
+        {/* Controls row */}
         <div
           style={{
-            position: 'absolute',
-            bottom: 20,
-            left: 20,
-            zIndex: 40,
             display: 'flex',
             alignItems: 'center',
             gap: 8,
-            backgroundColor: 'rgba(15, 23, 42, 0.85)',
+            backgroundColor: 'rgba(15, 23, 42, 0.88)',
             backdropFilter: 'blur(12px)',
             border: '1px solid rgba(148, 163, 184, 0.2)',
             borderRadius: '10px',
@@ -210,73 +346,142 @@ export const App: React.FC = () => {
             boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
           }}
         >
-          {/* Orbital Animation Play/Pause */}
+          {/* Camera Mode Toggle */}
           <button
-            onClick={() => setIsOrbitAnimating((prev) => !prev)}
-            title={isOrbitAnimating ? 'Pause planetary orbits' : 'Resume planetary orbits'}
+            onClick={() => setCameraControlMode((prev) => (prev === 'orbit' ? 'fly' : 'orbit'))}
+            title="Toggle between Orbit Controls and Free-Fly WASD camera (Hotkey: C)"
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 5,
               padding: '4px 8px',
-              backgroundColor: isOrbitAnimating ? 'rgba(139, 92, 246, 0.25)' : 'rgba(51, 65, 85, 0.5)',
-              border: `1px solid ${isOrbitAnimating ? '#8b5cf6' : 'rgba(148, 163, 184, 0.2)'}`,
+              backgroundColor:
+                cameraControlMode === 'fly'
+                  ? 'rgba(16, 185, 129, 0.25)'
+                  : 'rgba(51, 65, 85, 0.5)',
+              border: `1px solid ${
+                cameraControlMode === 'fly' ? '#10b981' : 'rgba(148, 163, 184, 0.2)'
+              }`,
               borderRadius: '6px',
-              color: isOrbitAnimating ? '#c084fc' : '#94a3b8',
+              color: cameraControlMode === 'fly' ? '#34d399' : '#94a3b8',
               fontSize: '11px',
               fontWeight: 600,
               cursor: 'pointer',
               transition: 'all 0.15s',
             }}
           >
-            <span>{isOrbitAnimating ? '⏸ Orbits Active' : '▶ Orbits Paused'}</span>
+            <span>{cameraControlMode === 'fly' ? '✈ Free-Fly (WASD)' : '👁 Orbit Camera'}</span>
           </button>
 
-          {/* Orbit Rings Toggle */}
-          <button
-            onClick={() => setIsOrbitRingsVisible((prev) => !prev)}
-            title="Toggle visible orbit rings"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5,
-              padding: '4px 8px',
-              backgroundColor: isOrbitRingsVisible ? 'rgba(99, 102, 241, 0.25)' : 'rgba(51, 65, 85, 0.5)',
-              border: `1px solid ${isOrbitRingsVisible ? '#6366f1' : 'rgba(148, 163, 184, 0.2)'}`,
-              borderRadius: '6px',
-              color: isOrbitRingsVisible ? '#818cf8' : '#94a3b8',
-              fontSize: '11px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-            }}
-          >
-            <span>{isOrbitRingsVisible ? '◎ Orbit Rings' : '○ Rings Hidden'}</span>
-          </button>
+          {/* Solar system toggles (when in hybrid mode) */}
+          {currentMode === 'hybrid' && (
+            <>
+              <div
+                style={{
+                  width: 1,
+                  height: 16,
+                  backgroundColor: 'rgba(148, 163, 184, 0.2)',
+                }}
+              />
 
-          {/* Star Glow Toggle */}
-          <button
-            onClick={() => setIsStarGlowVisible((prev) => !prev)}
-            title="Toggle stellar glow aura"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 5,
-              padding: '4px 8px',
-              backgroundColor: isStarGlowVisible ? 'rgba(234, 179, 8, 0.2)' : 'rgba(51, 65, 85, 0.5)',
-              border: `1px solid ${isStarGlowVisible ? '#eab308' : 'rgba(148, 163, 184, 0.2)'}`,
-              borderRadius: '6px',
-              color: isStarGlowVisible ? '#facc15' : '#94a3b8',
-              fontSize: '11px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-            }}
-          >
-            <span>{isStarGlowVisible ? '✦ Star Glow' : '✧ Glow Off'}</span>
-          </button>
+              {/* Orbital Animation Play/Pause */}
+              <button
+                onClick={() => setIsOrbitAnimating((prev) => !prev)}
+                title={isOrbitAnimating ? 'Pause planetary orbits' : 'Resume planetary orbits'}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  padding: '4px 8px',
+                  backgroundColor: isOrbitAnimating
+                    ? 'rgba(139, 92, 246, 0.25)'
+                    : 'rgba(51, 65, 85, 0.5)',
+                  border: `1px solid ${
+                    isOrbitAnimating ? '#8b5cf6' : 'rgba(148, 163, 184, 0.2)'
+                  }`,
+                  borderRadius: '6px',
+                  color: isOrbitAnimating ? '#c084fc' : '#94a3b8',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <span>{isOrbitAnimating ? '⏸ Orbits' : '▶ Paused'}</span>
+              </button>
+
+              {/* Orbit Rings Toggle */}
+              <button
+                onClick={() => setIsOrbitRingsVisible((prev) => !prev)}
+                title="Toggle visible orbit rings"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  padding: '4px 8px',
+                  backgroundColor: isOrbitRingsVisible
+                    ? 'rgba(99, 102, 241, 0.25)'
+                    : 'rgba(51, 65, 85, 0.5)',
+                  border: `1px solid ${
+                    isOrbitRingsVisible ? '#6366f1' : 'rgba(148, 163, 184, 0.2)'
+                  }`,
+                  borderRadius: '6px',
+                  color: isOrbitRingsVisible ? '#818cf8' : '#94a3b8',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <span>{isOrbitRingsVisible ? '◎ Rings' : '○ Rings Off'}</span>
+              </button>
+
+              {/* Star Glow Toggle */}
+              <button
+                onClick={() => setIsStarGlowVisible((prev) => !prev)}
+                title="Toggle stellar glow aura"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  padding: '4px 8px',
+                  backgroundColor: isStarGlowVisible
+                    ? 'rgba(234, 179, 8, 0.2)'
+                    : 'rgba(51, 65, 85, 0.5)',
+                  border: `1px solid ${
+                    isStarGlowVisible ? '#eab308' : 'rgba(148, 163, 184, 0.2)'
+                  }`,
+                  borderRadius: '6px',
+                  color: isStarGlowVisible ? '#facc15' : '#94a3b8',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <span>{isStarGlowVisible ? '✦ Glow' : '✧ Glow Off'}</span>
+              </button>
+            </>
+          )}
         </div>
-      )}
+
+        {/* Free-Fly instructions badge */}
+        {cameraControlMode === 'fly' && (
+          <div
+            style={{
+              fontSize: '10px',
+              backgroundColor: 'rgba(15, 23, 42, 0.9)',
+              border: '1px solid rgba(16, 185, 129, 0.3)',
+              borderRadius: '6px',
+              padding: '4px 8px',
+              color: '#6ee7b7',
+              boxShadow: '0 2px 10px rgba(0,0,0,0.4)',
+            }}
+          >
+            Drag to look · WASD move · Q/E up/down · Shift boost · C orbit mode
+          </div>
+        )}
+      </div>
 
       {/* Side Inspector Panel */}
       <SidePanel
