@@ -6,13 +6,13 @@ export type LinksMode = 'off' | 'strong' | 'all';
 
 /**
  * Checks whether edge endpoints are finite, distinct, and within galaxy sanity bounds.
- * Discards any edge longer than maxChordLength (default 1100).
+ * Allows far-apart cross-galaxy connections within sanityLimit (default 2500).
  */
 export function isEdgeGeometryValid(
   p1: [number, number, number] | THREE.Vector3,
   p2: [number, number, number] | THREE.Vector3,
   sanityLimit: number = 2500.0,
-  maxChordLength: number = 1100.0
+  maxChordLength: number = 2500.0
 ): boolean {
   const x1 = Array.isArray(p1) ? p1[0] : p1.x;
   const y1 = Array.isArray(p1) ? p1[1] : p1.y;
@@ -93,7 +93,10 @@ export function computeArcControlPoint(
     h = Math.imul(h, 16777619);
   }
   const jitter = ((Math.abs(h) % 100) / 100.0) * 0.15 + 0.92;
-  const arcHeight = Math.min(65.0, Math.max(12.0, chordLen * 0.16 * jitter));
+  // For far-apart connections (> 1100), use gentle, shallow curve to avoid wild high loops
+  const arcHeight = chordLen > 1100.0
+    ? Math.min(32.0, Math.max(12.0, chordLen * 0.02 * jitter))
+    : Math.min(65.0, Math.max(12.0, chordLen * 0.16 * jitter));
 
   return mid.clone().add(archDir.multiplyScalar(arcHeight));
 }

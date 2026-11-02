@@ -787,4 +787,93 @@ mod tests {
         assert_eq!(classify_star_activity_percentile(0.50, true), StarActivityTier::Root);
         assert_eq!(classify_star_activity_percentile(0.00, true), StarActivityTier::Root);
     }
+
+    #[test]
+    fn test_edges_follow_animated_orbital_positions() {
+        use cortex_model::{HybridNodeLayout, OrbitParameters, SystemRole};
+        use std::collections::BTreeMap;
+
+        let mut layout = BTreeMap::new();
+        // Star at origin
+        layout.insert(
+            "star_1".into(),
+            HybridNodeLayout {
+                role: SystemRole::Star,
+                base_position: [0.0, 0.0, 0.0],
+                orbit: None,
+            },
+        );
+        // Planet orbiting star_1 with radius 120 and angular speed 1.5 rad/sec
+        layout.insert(
+            "planet_1".into(),
+            HybridNodeLayout {
+                role: SystemRole::Planet,
+                base_position: [0.0, 0.0, 0.0],
+                orbit: Some(OrbitParameters {
+                    parent_id: Some("star_1".into()),
+                    radius: 120.0,
+                    angular_speed: 1.5,
+                    phase: 0.0,
+                    inclination: 0.1,
+                    ascending_node: 0.0,
+                }),
+            },
+        );
+        // Another star across space
+        layout.insert(
+            "star_2".into(),
+            HybridNodeLayout {
+                role: SystemRole::Star,
+                base_position: [300.0, 50.0, 0.0],
+                orbit: None,
+            },
+        );
+
+        // Evaluate positions at t = 0.0
+        let pos_t0 = crate::hybrid_layout::evaluate_hybrid_positions(&layout, 0.0);
+        let p_planet_0 = pos_t0.get("planet_1").unwrap();
+        let p_star2 = pos_t0.get("star_2").unwrap();
+
+        // Edge between planet_1 and star_2
+        let ctrl_t0 = compute_arc_control_point(*p_planet_0, *p_star2, "planet_1", "star_2");
+
+        // Advance simulation time to t = 1.0
+        let pos_t1 = crate::hybrid_layout::evaluate_hybrid_positions(&layout, 1.0);
+        let p_planet_1 = pos_t1.get("planet_1").unwrap();
+
+        // Assert that planet has moved along its orbit
+        let planet_displacement = (p_planet_1[0] - p_planet_0[0]).powi(2)
+            + (p_planet_1[1] - p_planet_0[1]).powi(2)
+            + (p_planet_1[2] - p_planet_0[2]).powi(2);
+        assert!(
+            planet_displacement > 10.0,
+            "Planet must move continuously as orbit clock advances"
+        );
+
+        // Edge endpoints and arc control point must move with the node
+        let ctrl_t1 = compute_arc_control_point(*p_planet_1, *p_star2, "planet_1", "star_2");
+        assert_ne!(
+            ctrl_t0, ctrl_t1,
+            "Arc control point and geometry must follow live orbital position each frame"
+        );
+    }
+
+    #[test]
+    fn test_long_chord_connections_allowed_in_all_mode() {
+        // Points far apart (distance > 1100, e.g. 1800 units across galaxy)
+        let p1 = [-900.0, 100.0, 0.0];
+        let p2 = [900.0, -100.0, 0.0];
+
+        // Sanity limit allows cross-galaxy chords
+        assert!(
+            is_edge_geometry_valid(p1, p2, 2500.0),
+            "Far-apart systems within galaxy bounds must not be rejected"
+        );
+
+        // Arc control point computes a gentle bridge without exploding
+        let ctrl = compute_arc_control_point(p1, p2, "star_a", "star_b");
+        assert!(ctrl[0].is_finite());
+        assert!(ctrl[1].is_finite());
+        assert!(ctrl[2].is_finite());
+    }
 }

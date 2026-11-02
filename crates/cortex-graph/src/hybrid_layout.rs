@@ -18,6 +18,84 @@ fn hash_to_float(hash: u64, max_val: f32) -> f32 {
     ((hash % 10000) as f32 / 10000.0) * max_val
 }
 
+/// Computes orbital position offset in 3D space given orbit parameters and elapsed time.
+pub fn compute_orbital_offset(orbit: &OrbitParameters, time: f32) -> [f32; 3] {
+    let theta = orbit.phase + orbit.angular_speed * time;
+    let r = orbit.radius;
+    let inc = orbit.inclination;
+    let asc = orbit.ascending_node;
+
+    let cos_theta = theta.cos();
+    let sin_theta = theta.sin();
+    let cos_inc = inc.cos();
+    let sin_inc = inc.sin();
+    let cos_asc = asc.cos();
+    let sin_asc = asc.sin();
+
+    let x = r * (cos_theta * cos_asc - sin_theta * sin_asc * cos_inc);
+    let y = r * (sin_theta * sin_inc);
+    let z = r * (cos_theta * sin_asc + sin_theta * cos_asc * cos_inc);
+
+    [x, y, z]
+}
+
+/// Evaluates live 3D positions for all nodes at simulation time `t`.
+pub fn evaluate_hybrid_positions(
+    layout: &BTreeMap<NodeId, HybridNodeLayout>,
+    time: f32,
+) -> HashMap<NodeId, [f32; 3]> {
+    let mut positions = HashMap::new();
+
+    // Pass 1: Base positions (Stars, Anchors, Unaffiliated)
+    for (id, node_layout) in layout {
+        if node_layout.orbit.is_none() {
+            positions.insert(id.clone(), node_layout.base_position);
+        }
+    }
+
+    // Pass 2: Planets
+    for (id, node_layout) in layout {
+        if let Some(orbit) = &node_layout.orbit {
+            if node_layout.role == SystemRole::Planet {
+                let parent_pos = orbit
+                    .parent_id
+                    .as_ref()
+                    .and_then(|pid| positions.get(pid))
+                    .copied()
+                    .unwrap_or([0.0, 0.0, 0.0]);
+                let offset = compute_orbital_offset(orbit, time);
+                positions.insert(id.clone(), [
+                    parent_pos[0] + offset[0],
+                    parent_pos[1] + offset[1],
+                    parent_pos[2] + offset[2],
+                ]);
+            }
+        }
+    }
+
+    // Pass 3: Moons
+    for (id, node_layout) in layout {
+        if let Some(orbit) = &node_layout.orbit {
+            if node_layout.role == SystemRole::Moon {
+                let parent_pos = orbit
+                    .parent_id
+                    .as_ref()
+                    .and_then(|pid| positions.get(pid))
+                    .copied()
+                    .unwrap_or([0.0, 0.0, 0.0]);
+                let offset = compute_orbital_offset(orbit, time);
+                positions.insert(id.clone(), [
+                    parent_pos[0] + offset[0],
+                    parent_pos[1] + offset[1],
+                    parent_pos[2] + offset[2],
+                ]);
+            }
+        }
+    }
+
+    positions
+}
+
 /// Computes the deterministic 3D Hybrid (Solar-System) layout for the graph.
 /// Hierarchy:
 /// - Project = Star

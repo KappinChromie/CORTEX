@@ -954,10 +954,12 @@ function EdgesLayer({
 
   // Fixed pre-allocated geometries for fluid 60fps updates without garbage collection
   const normalGeoRef = useRef<THREE.BufferGeometry>(new THREE.BufferGeometry());
+  const faintGeoRef = useRef<THREE.BufferGeometry>(new THREE.BufferGeometry());
   const highlightGeoRef = useRef<THREE.BufferGeometry>(new THREE.BufferGeometry());
 
   // Buffer capacity: up to 400 arcs * 16 vertices * 3 coords = 19,200 floats
   const normalBuffer = useMemo(() => new Float32Array(400 * 16 * 3), []);
+  const faintBuffer = useMemo(() => new Float32Array(400 * 16 * 3), []);
   const highlightBuffer = useMemo(() => new Float32Array(100 * 16 * 3), []);
 
   useEffect(() => {
@@ -965,15 +967,20 @@ function EdgesLayer({
       'position',
       new THREE.BufferAttribute(normalBuffer, 3).setUsage(THREE.DynamicDrawUsage)
     );
+    faintGeoRef.current.setAttribute(
+      'position',
+      new THREE.BufferAttribute(faintBuffer, 3).setUsage(THREE.DynamicDrawUsage)
+    );
     highlightGeoRef.current.setAttribute(
       'position',
       new THREE.BufferAttribute(highlightBuffer, 3).setUsage(THREE.DynamicDrawUsage)
     );
-  }, [normalBuffer, highlightBuffer]);
+  }, [normalBuffer, faintBuffer, highlightBuffer]);
 
   useFrame(() => {
     const activeId = hoveredNode?.id || selectedNode?.id;
     let normalIdx = 0;
+    let faintIdx = 0;
     let highlightIdx = 0;
     let visibleCount = 0;
     const maxVisibleArcs = linksMode === 'all' ? 400 : 30;
@@ -1006,6 +1013,8 @@ function EdgesLayer({
 
       const v1 = new THREE.Vector3(p1[0], p1[1], p1[2]);
       const v2 = new THREE.Vector3(p2[0], p2[1], p2[2]);
+      const chordLen = v1.distanceTo(v2);
+      const isFarApart = chordLen > 1100.0;
 
       // Compute deterministic outward control point
       const ctrl = computeArcControlPoint(v1, v2, edge.from, edge.to);
@@ -1032,7 +1041,14 @@ function EdgesLayer({
           highlightBuffer[highlightIdx++] = curX;
           highlightBuffer[highlightIdx++] = curY;
           highlightBuffer[highlightIdx++] = curZ;
-        } else if (!isHighlight && normalIdx + 6 <= normalBuffer.length) {
+        } else if (!isHighlight && isFarApart && faintIdx + 6 <= faintBuffer.length) {
+          faintBuffer[faintIdx++] = prevX;
+          faintBuffer[faintIdx++] = prevY;
+          faintBuffer[faintIdx++] = prevZ;
+          faintBuffer[faintIdx++] = curX;
+          faintBuffer[faintIdx++] = curY;
+          faintBuffer[faintIdx++] = curZ;
+        } else if (!isHighlight && !isFarApart && normalIdx + 6 <= normalBuffer.length) {
           normalBuffer[normalIdx++] = prevX;
           normalBuffer[normalIdx++] = prevY;
           normalBuffer[normalIdx++] = prevZ;
@@ -1054,6 +1070,10 @@ function EdgesLayer({
     const normAttr = normalGeoRef.current.getAttribute('position') as THREE.BufferAttribute;
     if (normAttr) normAttr.needsUpdate = true;
 
+    faintGeoRef.current.setDrawRange(0, faintIdx / 3);
+    const faintAttr = faintGeoRef.current.getAttribute('position') as THREE.BufferAttribute;
+    if (faintAttr) faintAttr.needsUpdate = true;
+
     highlightGeoRef.current.setDrawRange(0, highlightIdx / 3);
     const hlAttr = highlightGeoRef.current.getAttribute('position') as THREE.BufferAttribute;
     if (hlAttr) hlAttr.needsUpdate = true;
@@ -1067,6 +1087,17 @@ function EdgesLayer({
           color="#818cf8"
           transparent
           opacity={0.11}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </lineSegments>
+
+      {/* Very faint, gently curved lines for far-apart cross-galaxy connections in Links: All mode */}
+      <lineSegments geometry={faintGeoRef.current}>
+        <lineBasicMaterial
+          color="#818cf8"
+          transparent
+          opacity={0.038}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
