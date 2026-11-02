@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { ViewMode, Node } from '../types';
+import type { ViewMode, Node, DataSource } from '../types';
 import { ViewModeSwitch } from './ViewModeSwitch';
 import { Search, Activity, Sparkles, Focus, RotateCcw } from 'lucide-react';
 
@@ -13,9 +13,10 @@ interface HeaderBarProps {
   onSelectNode: (node: Node) => void;
   onToggleHealth: () => void;
   isHealthOpen: boolean;
-  dataSource: 'live' | 'demo';
+  dataSource: DataSource;
   totalNodesCount: number;
   visibleNodesCount: number;
+  hiddenBreakdown?: string[];
   onFrameAll: () => void;
   onResetView: () => void;
 }
@@ -33,6 +34,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   dataSource,
   totalNodesCount,
   visibleNodesCount,
+  hiddenBreakdown,
   onFrameAll,
   onResetView,
 }) => {
@@ -96,42 +98,78 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           </div>
         </div>
 
-        {/* Live / Demo Data Badge */}
-        <div
-          style={{
-            fontSize: '10px',
-            fontWeight: 700,
-            letterSpacing: '0.06em',
-            padding: '3px 8px',
-            borderRadius: '12px',
-            backgroundColor:
-              dataSource === 'live'
-                ? 'rgba(16, 185, 129, 0.18)'
-                : 'rgba(245, 158, 11, 0.18)',
-            color: dataSource === 'live' ? '#34d399' : '#fbbf24',
-            border: `1px solid ${
-              dataSource === 'live'
-                ? 'rgba(16, 185, 129, 0.4)'
-                : 'rgba(245, 158, 11, 0.4)'
-            }`,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-          }}
-        >
-          <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              backgroundColor: dataSource === 'live' ? '#34d399' : '#fbbf24',
-            }}
-          />
-          {dataSource === 'live' ? 'LIVE DATA' : 'DEMO DATA'}
-        </div>
+        {/* Three-State Data Source Badge */}
+        {(() => {
+          const cfg = {
+            LIVE: {
+              label: 'LIVE',
+              color: '#34d399',
+              bg: 'rgba(16, 185, 129, 0.18)',
+              border: 'rgba(16, 185, 129, 0.4)',
+              tooltip: 'LIVE: Connected via native Tauri IPC to local agent databases (state.db, kanban.db, etc.)',
+            },
+            SNAPSHOT: {
+              label: 'SNAPSHOT',
+              color: '#38bdf8',
+              bg: 'rgba(14, 165, 233, 0.18)',
+              border: 'rgba(14, 165, 233, 0.4)',
+              tooltip: 'SNAPSHOT: Static JSON export of real machine scan, used in browser dev mode outside Tauri',
+            },
+            DEMO: {
+              label: 'DEMO',
+              color: '#fbbf24',
+              bg: 'rgba(245, 158, 11, 0.18)',
+              border: 'rgba(245, 158, 11, 0.4)',
+              tooltip: 'DEMO: Synthetic fallback mock data when neither Tauri IPC nor snapshot.json is available',
+            },
+          }[dataSource] || {
+            label: dataSource,
+            color: '#94a3b8',
+            bg: 'rgba(100, 116, 139, 0.18)',
+            border: 'rgba(100, 116, 139, 0.4)',
+            tooltip: 'Unknown data source',
+          };
 
-        {/* Showing X of Y nodes counter */}
+          return (
+            <div
+              title={cfg.tooltip}
+              style={{
+                fontSize: '10px',
+                fontWeight: 700,
+                letterSpacing: '0.06em',
+                padding: '3px 8px',
+                borderRadius: '12px',
+                backgroundColor: cfg.bg,
+                color: cfg.color,
+                border: `1px solid ${cfg.border}`,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+                cursor: 'help',
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  backgroundColor: cfg.color,
+                  boxShadow: `0 0 6px ${cfg.color}`,
+                }}
+              />
+              {cfg.label}
+            </div>
+          );
+        })()}
+
+        {/* Showing X of Y nodes counter with breakdown tooltip */}
         <span
+          title={
+            hiddenBreakdown && hiddenBreakdown.length > 0
+              ? `${totalNodesCount - visibleNodesCount} nodes hidden:\n` +
+                hiddenBreakdown.map((b) => `• ${b}`).join('\n')
+              : 'All nodes currently visible'
+          }
           style={{
             fontSize: '11px',
             backgroundColor: 'rgba(51, 65, 85, 0.6)',
@@ -140,6 +178,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             borderRadius: '6px',
             border: '1px solid rgba(56, 189, 248, 0.2)',
             fontWeight: 500,
+            cursor: 'help',
           }}
         >
           Showing {visibleNodesCount} of {totalNodesCount} nodes

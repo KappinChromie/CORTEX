@@ -110,7 +110,9 @@ fn compute_3d_positions(
                 480.0 + (i % 6) as f32 * 30.0
             }
             cortex_model::NodeKind::Tool => 580.0 + (i % 3) as f32 * 20.0,
-            cortex_model::NodeKind::Artifact | cortex_model::NodeKind::Memory => {
+            cortex_model::NodeKind::Artifact
+            | cortex_model::NodeKind::Memory
+            | cortex_model::NodeKind::Persona => {
                 320.0 + (i % 7) as f32 * 25.0
             }
         };

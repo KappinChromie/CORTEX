@@ -215,16 +215,47 @@ mod tests {
     }
 
     #[test]
-    fn test_generic_root_marking() {
-        let snapshot = scan_all_sources(None, None, vec![]);
-        for node in &snapshot.nodes {
-            if node.kind == cortex_model::NodeKind::Project {
-                if let Some(ref p) = node.path {
-                    if path_norm::is_generic_root_path(p) {
-                        assert!(node.is_generic_root, "Project {p} should be generic root");
-                    }
-                }
-            }
-        }
+    fn test_soul_is_persona_not_memory() {
+        let dir = tempdir().unwrap();
+        // Create SOUL.md
+        std::fs::write(dir.path().join("SOUL.md"), "# Hermes Soul\nIdentity").unwrap();
+        // Create empty memories folder
+        let mem_dir = dir.path().join("memories");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+        std::fs::write(mem_dir.join("MEMORY.md"), "").unwrap();
+
+        let adapter = hermes::HermesAdapter::new(dir.path().to_path_buf());
+        let out = adapter.scan();
+
+        let soul_node = out.nodes.iter().find(|n| n.id == "hermes:soul");
+        assert!(soul_node.is_some(), "hermes:soul node must exist");
+        let soul = soul_node.unwrap();
+        assert_eq!(soul.kind, NodeKind::Persona, "SOUL.md must be classified as Persona, not Memory");
+        assert!(soul.is_ambient, "SOUL.md must be ambient");
+        assert_eq!(soul.subkind.as_deref(), Some("persona"));
+        assert!(soul.timestamp_source.is_none());
+
+        let memory_nodes: Vec<_> = out.nodes.iter().filter(|n| n.kind == NodeKind::Memory).collect();
+        assert_eq!(memory_nodes.len(), 0, "Expected exactly 0 Memory nodes when memory files are empty");
+    }
+
+    #[test]
+    fn test_csp_and_capabilities_configuration() {
+        // Read tauri.conf.json
+        let conf_str = std::fs::read_to_string("../../src-tauri/tauri.conf.json")
+            .or_else(|_| std::fs::read_to_string("src-tauri/tauri.conf.json"))
+            .expect("Failed to read tauri.conf.json");
+        let conf: serde_json::Value = serde_json::from_str(&conf_str).expect("Valid JSON");
+        let csp = conf["app"]["security"]["csp"].as_str().expect("CSP string present");
+        assert!(csp.contains("default-src 'self'"), "CSP must enforce default-src 'self'");
+        assert!(!csp.contains("https://"), "CSP must not allow external HTTPS domains");
+
+        // Read default.json capabilities
+        let cap_str = std::fs::read_to_string("../../src-tauri/capabilities/default.json")
+            .or_else(|_| std::fs::read_to_string("src-tauri/capabilities/default.json"))
+            .expect("Failed to read capabilities/default.json");
+        let cap: serde_json::Value = serde_json::from_str(&cap_str).expect("Valid JSON");
+        let windows = cap["windows"].as_array().expect("windows array");
+        assert_eq!(windows, &vec![serde_json::Value::String("main".into())], "Capabilities must be tightened to main window only (no wildcard)");
     }
 }

@@ -5,6 +5,7 @@ import type {
   Node,
   NodeKind,
   ViewMode,
+  DataSource,
 } from './types';
 import { WebLayoutEngine } from './layouts/webLayout';
 import { GraphCanvas3D } from './components/GraphCanvas3D';
@@ -21,7 +22,7 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dataSource, setDataSource] = useState<'live' | 'demo'>('live');
+  const [dataSource, setDataSource] = useState<DataSource>('LIVE');
   const [frameAllTrigger, setFrameAllTrigger] = useState(0);
   const [resetViewTrigger, setResetViewTrigger] = useState(0);
 
@@ -44,6 +45,7 @@ export const App: React.FC = () => {
     artifact: true,
     task: true,
     memory: true,
+    persona: true,
     skill: true,
     topic: true,
     tool: true,
@@ -67,7 +69,7 @@ export const App: React.FC = () => {
       // 1. Attempt native Tauri IPC call
       const res = await invoke<EnrichedGraphSnapshot>('get_graph_snapshot');
       setData(res);
-      setDataSource('live');
+      setDataSource('LIVE');
     } catch (ipcErr) {
       console.warn('Tauri IPC unavailable (running in web browser or mock mode):', ipcErr);
       // 2. Fall back to static snapshot.json if available
@@ -76,7 +78,7 @@ export const App: React.FC = () => {
         if (resp.ok) {
           const json = await resp.json();
           setData(json);
-          setDataSource('demo');
+          setDataSource('SNAPSHOT');
           return;
         }
       } catch (fetchErr) {
@@ -84,7 +86,7 @@ export const App: React.FC = () => {
       }
       // 3. Fall back to synthetic mock data
       setData(createFallbackMock());
-      setDataSource('demo');
+      setDataSource('DEMO');
     } finally {
       setLoading(false);
     }
@@ -247,6 +249,43 @@ export const App: React.FC = () => {
     return data.snapshot.sources.reduce((acc, s) => acc + (s.scan_duration_ms || 0), 0);
   }, [data]);
 
+  // Detailed breakdown of hidden nodes for the header tooltip
+  const hiddenBreakdown = useMemo(() => {
+    if (!data?.snapshot.nodes) return [];
+    let tagsCount = 0;
+    let ambientCount = 0;
+    let defaultHiddenCount = 0;
+    const kindCounts: Record<string, number> = {};
+
+    for (const node of data.snapshot.nodes) {
+      if (node.is_ambient && !isAmbientEnabled) {
+        ambientCount++;
+        continue;
+      }
+      if (!enabledKinds[node.kind]) {
+        kindCounts[node.kind] = (kindCounts[node.kind] || 0) + 1;
+        continue;
+      }
+      if (node.kind === 'topic' && node.subkind === 'tag') {
+        if (!showTags) tagsCount++;
+        continue;
+      }
+      if (node.hidden_by_default && !showTags) {
+        defaultHiddenCount++;
+        continue;
+      }
+    }
+
+    const items: string[] = [];
+    if (tagsCount > 0) items.push(`${tagsCount} tags hidden by filter`);
+    if (ambientCount > 0) items.push(`${ambientCount} ambient nodes hidden by Ambient toggle`);
+    if (defaultHiddenCount > 0) items.push(`${defaultHiddenCount} nodes hidden by default`);
+    for (const [k, c] of Object.entries(kindCounts)) {
+      items.push(`${c} ${k} nodes hidden by filter`);
+    }
+    return items;
+  }, [data, isAmbientEnabled, enabledKinds, showTags]);
+
   return (
     <div
       style={{
@@ -271,6 +310,7 @@ export const App: React.FC = () => {
         dataSource={dataSource}
         totalNodesCount={data?.snapshot.nodes.length || 0}
         visibleNodesCount={visibleNodes.length}
+        hiddenBreakdown={hiddenBreakdown}
         onFrameAll={handleFrameAll}
         onResetView={handleResetView}
       />
@@ -678,6 +718,24 @@ function createFallbackMock(): EnrichedGraphSnapshot {
       is_generic_root: false,
       hidden_by_default: false,
       metadata: {},
+    },
+    {
+      id: 'hermes:soul',
+      source_id: 'hermes',
+      kind: 'persona',
+      title: 'Hermes Agent SOUL',
+      body_preview: 'Hermes identity and persona specification.',
+      tags: ['soul', 'identity', 'hermes', 'persona'],
+      degree: 1,
+      access_count: 1,
+      pinned: true,
+      importance: 0.9,
+      freshness: 1.0,
+      is_ambient: true,
+      is_generic_root: false,
+      subkind: 'persona',
+      hidden_by_default: false,
+      metadata: { type: 'personality' },
     },
   ];
 

@@ -14,6 +14,7 @@ pub enum NodeKind {
     Artifact,
     Task,
     Memory,
+    Persona,
     Tool,
 }
 
@@ -28,6 +29,7 @@ impl std::fmt::Display for NodeKind {
             NodeKind::Artifact => write!(f, "Artifact"),
             NodeKind::Task => write!(f, "Task"),
             NodeKind::Memory => write!(f, "Memory"),
+            NodeKind::Persona => write!(f, "Persona"),
             NodeKind::Tool => write!(f, "Tool"),
         }
     }

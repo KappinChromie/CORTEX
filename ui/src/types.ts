@@ -7,7 +7,10 @@ export type NodeKind =
   | 'artifact'
   | 'task'
   | 'memory'
+  | 'persona'
   | 'tool';
+
+export type DataSource = 'LIVE' | 'SNAPSHOT' | 'DEMO';
 
 export type EdgeKind =
   | 'contains'

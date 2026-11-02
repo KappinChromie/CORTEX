@@ -168,39 +168,34 @@ impl HermesAdapter {
             }
         }
 
-        // 5. Ingest SOUL.md
+        // 5. Ingest SOUL.md as Persona/Config (ambient document, not a temporal memory)
         let soul_file = self.home_dir.join("SOUL.md");
         if soul_file.exists() {
             items_scanned += 1;
             if let Ok(content) = fs::read_to_string(&soul_file) {
-                let mtime = fs::metadata(&soul_file)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(DateTime::<Utc>::from);
-
                 let preview = redact_and_truncate(&content, 300);
                 nodes.insert(
                     "hermes:soul".into(),
                     Node {
                         id: "hermes:soul".into(),
                         source_id: "hermes".into(),
-                        kind: NodeKind::Memory,
+                        kind: NodeKind::Persona,
                         title: "Hermes Agent SOUL".into(),
                         body_preview: preview,
                         path: Some(soul_file.to_string_lossy().to_string()),
-                        tags: vec!["soul".into(), "identity".into(), "hermes".into()],
-                        created_at: mtime,
-                        modified_at: mtime,
-                        last_active_at: mtime,
+                        tags: vec!["soul".into(), "identity".into(), "hermes".into(), "persona".into()],
+                        created_at: None,
+                        modified_at: None,
+                        last_active_at: None,
                         access_count: 1,
                         pinned: true,
                         degree: 0,
                         importance: 0.9,
                         freshness: 1.0,
-                        is_ambient: false,
+                        is_ambient: true,
                         is_generic_root: false,
-                        timestamp_source: Some("mtime".into()),
-                        subkind: None,
+                        timestamp_source: None,
+                        subkind: Some("persona".into()),
                         hidden_by_default: false,
                         metadata: serde_json::json!({
                             "type": "personality",
