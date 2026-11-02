@@ -7,6 +7,7 @@
     "dev": "npm --prefix ui run dev",
     "build": "npm --prefix ui run build",
     "tauri": "npm --prefix ui run tauri --",
-    "tauri:dev": "npx --prefix ui tauri dev"
+    "tauri:dev": "npx --prefix ui tauri dev",
+    "tauri:build": "npx --prefix ui tauri build"
   }
 }
