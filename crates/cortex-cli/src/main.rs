@@ -66,6 +66,11 @@ fn print_json_output(snapshot: &GraphSnapshot, duration_ms: u64) {
         *edges_by_kind.entry(edge.kind.to_string()).or_default() += 1;
     }
 
+    let mut events_by_kind: BTreeMap<String, usize> = BTreeMap::new();
+    for event in &snapshot.events {
+        *events_by_kind.entry(event.kind.to_string()).or_default() += 1;
+    }
+
     let output = json!({
         "scan_duration_ms": duration_ms,
         "total_nodes": snapshot.nodes.len(),
@@ -73,6 +78,7 @@ fn print_json_output(snapshot: &GraphSnapshot, duration_ms: u64) {
         "total_events": snapshot.events.len(),
         "nodes_by_kind": nodes_by_kind,
         "edges_by_kind": edges_by_kind,
+        "events_by_kind": events_by_kind,
         "shared_projects": snapshot.shared_projects,
         "shared_projects_count": snapshot.shared_projects.len(),
         "sources": snapshot.sources,
@@ -121,6 +127,16 @@ fn print_human_output(snapshot: &GraphSnapshot, duration_ms: u64, store_path: &s
 
     println!("\n--- EDGES BY KIND (Total: {}) ---", snapshot.edges.len());
     for (kind, count) in &edges_by_kind {
+        println!("  * {:<22} : {:>5}", kind, count);
+    }
+
+    let mut events_by_kind: BTreeMap<String, usize> = BTreeMap::new();
+    for event in &snapshot.events {
+        *events_by_kind.entry(event.kind.to_string()).or_default() += 1;
+    }
+
+    println!("\n--- EVENTS BY KIND (Total: {}) ---", snapshot.events.len());
+    for (kind, count) in &events_by_kind {
         println!("  * {:<22} : {:>5}", kind, count);
     }
 

@@ -61,6 +61,16 @@ pub struct Node {
     #[serde(default)]
     pub freshness: f32,
     #[serde(default)]
+    pub is_ambient: bool,
+    #[serde(default)]
+    pub is_generic_root: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subkind: Option<String>,
+    #[serde(default)]
+    pub hidden_by_default: bool,
+    #[serde(default)]
     pub metadata: serde_json::Value,
 }
 
@@ -114,8 +124,11 @@ fn default_edge_weight() -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
+    Activity,
     SessionStarted,
+    SessionEnded,
     MessageSent,
+    TaskCreated,
     TaskCompleted,
     ArtifactUpdated,
     ToolCalled,
@@ -125,8 +138,11 @@ pub enum EventKind {
 impl std::fmt::Display for EventKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            EventKind::Activity => write!(f, "Activity"),
             EventKind::SessionStarted => write!(f, "SessionStarted"),
+            EventKind::SessionEnded => write!(f, "SessionEnded"),
             EventKind::MessageSent => write!(f, "MessageSent"),
+            EventKind::TaskCreated => write!(f, "TaskCreated"),
             EventKind::TaskCompleted => write!(f, "TaskCompleted"),
             EventKind::ArtifactUpdated => write!(f, "ArtifactUpdated"),
             EventKind::ToolCalled => write!(f, "ToolCalled"),

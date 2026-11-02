@@ -38,6 +38,11 @@ export interface Node {
   degree: number;
   importance: number;
   freshness: number;
+  is_ambient: boolean;
+  is_generic_root: boolean;
+  timestamp_source?: string;
+  subkind?: string;
+  hidden_by_default: boolean;
   metadata: Record<string, unknown>;
 }
 

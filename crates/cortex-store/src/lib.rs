@@ -73,6 +73,11 @@ impl CortexStore {
                 degree INTEGER NOT NULL DEFAULT 0,
                 importance REAL NOT NULL DEFAULT 0.0,
                 freshness REAL NOT NULL DEFAULT 0.0,
+                is_ambient INTEGER NOT NULL DEFAULT 0,
+                is_generic_root INTEGER NOT NULL DEFAULT 0,
+                timestamp_source TEXT,
+                subkind TEXT,
+                hidden_by_default INTEGER NOT NULL DEFAULT 0,
                 metadata_json TEXT NOT NULL DEFAULT '{}'
             );
 
@@ -100,6 +105,14 @@ impl CortexStore {
                 hash TEXT NOT NULL
             );",
         )?;
+
+        // Graceful column migrations for existing tables
+        let _ = conn.execute("ALTER TABLE nodes ADD COLUMN is_ambient INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE nodes ADD COLUMN is_generic_root INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE nodes ADD COLUMN timestamp_source TEXT", []);
+        let _ = conn.execute("ALTER TABLE nodes ADD COLUMN subkind TEXT", []);
+        let _ = conn.execute("ALTER TABLE nodes ADD COLUMN hidden_by_default INTEGER NOT NULL DEFAULT 0", []);
+
         Ok(())
     }
 
@@ -151,8 +164,8 @@ impl CortexStore {
                 .replace('"', "");
 
             tx.execute(
-                "INSERT INTO nodes (id, source_id, kind, title, body_preview, path, tags_json, created_at, modified_at, last_active_at, access_count, pinned, degree, importance, freshness, metadata_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                "INSERT INTO nodes (id, source_id, kind, title, body_preview, path, tags_json, created_at, modified_at, last_active_at, access_count, pinned, degree, importance, freshness, is_ambient, is_generic_root, timestamp_source, subkind, hidden_by_default, metadata_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
                  ON CONFLICT(id) DO UPDATE SET
                     source_id = excluded.source_id,
                     kind = excluded.kind,
@@ -168,6 +181,11 @@ impl CortexStore {
                     degree = excluded.degree,
                     importance = excluded.importance,
                     freshness = excluded.freshness,
+                    is_ambient = excluded.is_ambient,
+                    is_generic_root = excluded.is_generic_root,
+                    timestamp_source = excluded.timestamp_source,
+                    subkind = excluded.subkind,
+                    hidden_by_default = excluded.hidden_by_default,
                     metadata_json = excluded.metadata_json",
                 params![
                     n.id,
@@ -185,6 +203,11 @@ impl CortexStore {
                     n.degree as i64,
                     n.importance,
                     n.freshness,
+                    if n.is_ambient { 1 } else { 0 },
+                    if n.is_generic_root { 1 } else { 0 },
+                    n.timestamp_source,
+                    n.subkind,
+                    if n.hidden_by_default { 1 } else { 0 },
                     metadata_json
                 ],
             )?;
@@ -235,7 +258,8 @@ impl CortexStore {
         // 1. Nodes
         let mut n_stmt = conn.prepare(
             "SELECT id, source_id, kind, title, body_preview, path, tags_json, created_at, modified_at, 
-                    last_active_at, access_count, pinned, degree, importance, freshness, metadata_json 
+                    last_active_at, access_count, pinned, degree, importance, freshness, metadata_json,
+                    is_ambient, is_generic_root, timestamp_source, subkind, hidden_by_default
              FROM nodes",
         )?;
 
@@ -256,6 +280,11 @@ impl CortexStore {
             let importance: f64 = row.get(13)?;
             let freshness: f64 = row.get(14)?;
             let metadata_json: String = row.get(15)?;
+            let is_ambient: i64 = row.get(16).unwrap_or(0);
+            let is_generic_root: i64 = row.get(17).unwrap_or(0);
+            let timestamp_source: Option<String> = row.get(18).ok();
+            let subkind: Option<String> = row.get(19).ok();
+            let hidden_by_default: i64 = row.get(20).unwrap_or(0);
 
             let kind = serde_json::from_str::<NodeKind>(&format!("\"{kind_str}\""))
                 .unwrap_or(NodeKind::Artifact);
@@ -283,6 +312,11 @@ impl CortexStore {
                 degree: degree as u32,
                 importance: importance as f32,
                 freshness: freshness as f32,
+                is_ambient: is_ambient != 0,
+                is_generic_root: is_generic_root != 0,
+                timestamp_source,
+                subkind,
+                hidden_by_default: hidden_by_default != 0,
                 metadata,
             })
         })?;
@@ -470,6 +504,11 @@ mod tests {
             degree: 2,
             importance: 1.0,
             freshness: 0.9,
+            is_ambient: false,
+            is_generic_root: false,
+            timestamp_source: Some("transcript".into()),
+            subkind: None,
+            hidden_by_default: false,
             metadata: serde_json::json!({"custom": "value"}),
         };
 
@@ -532,6 +571,11 @@ mod tests {
                 degree: 0,
                 importance: 0.5,
                 freshness: 0.5,
+                is_ambient: false,
+                is_generic_root: false,
+                timestamp_source: None,
+                subkind: None,
+                hidden_by_default: false,
                 metadata: serde_json::json!({}),
             });
         }

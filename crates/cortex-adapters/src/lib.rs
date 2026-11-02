@@ -81,7 +81,10 @@ pub fn scan_all_sources(
         if sources.len() > 1 || sources.contains("shared") {
             if let Some(node) = all_nodes.get_mut(&proj_id) {
                 node.source_id = "shared".into();
-                shared_projects.push(node.title.clone());
+                // Exclude generic roots from shared star count
+                if !node.is_generic_root {
+                    shared_projects.push(node.title.clone());
+                }
             }
         }
     }
@@ -127,12 +130,11 @@ pub fn scan_all_sources(
     let mut latest = None;
 
     for node in all_nodes.values() {
+        if node.is_ambient {
+            continue; // Ambient nodes (Skill, Topic, Tool) are static installed items; do not pollute timeline
+        }
         if let Some(ts) = node.created_at.or(node.last_active_at) {
-            // Check if timestamp is a real timestamp (source provided) vs file-mtime fallback
-            if node.kind == NodeKind::Conversation
-                || node.kind == NodeKind::Session
-                || node.kind == NodeKind::Task
-            {
+            if node.timestamp_source.as_deref() != Some("mtime") && node.timestamp_source.is_some() {
                 real_ts_count += 1;
             } else {
                 fallback_ts_count += 1;
@@ -198,5 +200,31 @@ mod tests {
         let (fm, body) = antigravity::parse_frontmatter(raw);
         assert!(fm.is_empty());
         assert_eq!(body, raw);
+    }
+
+    #[test]
+    fn test_ambient_node_timestamps_are_none() {
+        let snapshot = scan_all_sources(None, None, vec![]);
+        for node in &snapshot.nodes {
+            if node.is_ambient {
+                assert!(node.created_at.is_none(), "Ambient node {} has created_at", node.id);
+                assert!(node.last_active_at.is_none(), "Ambient node {} has last_active_at", node.id);
+                assert!(node.modified_at.is_none(), "Ambient node {} has modified_at", node.id);
+            }
+        }
+    }
+
+    #[test]
+    fn test_generic_root_marking() {
+        let snapshot = scan_all_sources(None, None, vec![]);
+        for node in &snapshot.nodes {
+            if node.kind == cortex_model::NodeKind::Project {
+                if let Some(ref p) = node.path {
+                    if path_norm::is_generic_root_path(p) {
+                        assert!(node.is_generic_root, "Project {p} should be generic root");
+                    }
+                }
+            }
+        }
     }
 }

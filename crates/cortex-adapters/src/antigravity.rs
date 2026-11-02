@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use cortex_model::{
     AdapterHealth, AdapterWarning, Edge, EdgeKind, Event, EventKind, HealthStatus, Node, NodeKind,
     NodeId,
@@ -11,7 +11,9 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::path_norm::{normalize_project_path, project_node_id, project_title_from_path};
+use crate::path_norm::{
+    is_generic_root_path, normalize_project_path, project_node_id, project_title_from_path,
+};
 use crate::redaction::redact_and_truncate;
 use crate::sqlite_helpers::open_readonly_sqlite;
 
@@ -143,6 +145,11 @@ impl AntigravityAdapter {
                                     degree: 0,
                                     importance: 0.5,
                                     freshness: 0.8,
+                                    is_ambient: false,
+                                    is_generic_root: false,
+                                    timestamp_source: Some("mtime".into()),
+                                    subkind: None,
+                                    hidden_by_default: false,
                                     metadata: serde_json::json!({
                                         "conversation_id": conv_id,
                                     }),
@@ -281,6 +288,11 @@ impl AntigravityAdapter {
                                 degree: 0,
                                 importance: 0.6,
                                 freshness: 0.7,
+                                is_ambient: true,
+                                is_generic_root: false,
+                                timestamp_source: None,
+                                subkind: None,
+                                hidden_by_default: false,
                                 metadata: Value::Null,
                             },
                         );
@@ -415,6 +427,11 @@ impl AntigravityAdapter {
                         degree: 0,
                         importance: 1.0,
                         freshness: 1.0,
+                        is_ambient: false,
+                        is_generic_root: is_generic_root_path(norm_path),
+                        timestamp_source: Some("metadata".into()),
+                        subkind: None,
+                        hidden_by_default: false,
                         metadata: serde_json::json!({
                             "normalized_path": norm_path,
                         }),
@@ -441,6 +458,11 @@ impl AntigravityAdapter {
                         degree: 0,
                         importance: 0.7,
                         freshness: 0.9,
+                        is_ambient: false,
+                        is_generic_root: false,
+                        timestamp_source: Some("mtime".into()),
+                        subkind: None,
+                        hidden_by_default: false,
                         metadata: serde_json::json!({
                             "conversation_id": conv_id,
                             "step_count": step_count,
@@ -516,6 +538,11 @@ impl AntigravityAdapter {
 
         let file_mtime = meta.modified().ok().map(DateTime::<Utc>::from);
         let final_time = updated_at.or(file_mtime);
+        let timestamp_source = if updated_at.is_some() {
+            Some("metadata".into())
+        } else {
+            Some("mtime".into())
+        };
 
         nodes.insert(
             artifact_node_id.clone(),
@@ -535,6 +562,11 @@ impl AntigravityAdapter {
                 degree: 0,
                 importance: 0.8,
                 freshness: 0.9,
+                is_ambient: false,
+                is_generic_root: false,
+                timestamp_source,
+                subkind: None,
+                hidden_by_default: false,
                 metadata: serde_json::json!({
                     "conversation_id": conv_uuid,
                     "filename": fname,
@@ -574,7 +606,9 @@ impl AntigravityAdapter {
         };
 
         let reader = BufReader::new(file);
-        let mut first_ts = None;
+        let mut earliest_ts: Option<DateTime<Utc>> = None;
+        let mut latest_ts: Option<DateTime<Utc>> = None;
+        let mut hourly_buckets: HashMap<DateTime<Utc>, u32> = HashMap::new();
         let mut discovered_project_path = None;
 
         for line_res in reader.lines() {
@@ -584,12 +618,17 @@ impl AntigravityAdapter {
             };
 
             if let Ok(val) = serde_json::from_str::<Value>(&line) {
-                // Read created_at
-                if first_ts.is_none() {
-                    if let Some(ts_str) = val.get("created_at").and_then(|v| v.as_str()) {
-                        first_ts = DateTime::parse_from_rfc3339(ts_str)
-                            .map(|dt| dt.with_timezone(&Utc))
-                            .ok();
+                // Read created_at and aggregate into hourly buckets
+                if let Some(ts_str) = val.get("created_at").and_then(|v| v.as_str()) {
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(ts_str) {
+                        let utc_dt = dt.with_timezone(&Utc);
+                        earliest_ts = Some(earliest_ts.map_or(utc_dt, |cur| cur.min(utc_dt)));
+                        latest_ts = Some(latest_ts.map_or(utc_dt, |cur| cur.max(utc_dt)));
+
+                        if let Some(hour_bucket) = utc_dt.date_naive().and_hms_opt(utc_dt.time().hour(), 0, 0) {
+                            let bucket_utc = hour_bucket.and_utc();
+                            *hourly_buckets.entry(bucket_utc).or_insert(0) += 1;
+                        }
                     }
                 }
 
@@ -612,14 +651,19 @@ impl AntigravityAdapter {
                                 body_preview: format!("Tool used by agents: {tool_name}"),
                                 path: None,
                                 tags: vec!["tool".into()],
-                                created_at: first_ts,
-                                modified_at: first_ts,
-                                last_active_at: first_ts,
+                                created_at: None,
+                                modified_at: None,
+                                last_active_at: None,
                                 access_count: 0,
                                 pinned: false,
                                 degree: 0,
                                 importance: 0.5,
                                 freshness: 0.8,
+                                is_ambient: true,
+                                is_generic_root: false,
+                                timestamp_source: None,
+                                subkind: None,
+                                hidden_by_default: false,
                                 metadata: Value::Null,
                             });
 
@@ -665,14 +709,19 @@ impl AntigravityAdapter {
                 body_preview: format!("Project workspace at {norm_path}"),
                 path: Some(norm_path.clone()),
                 tags: vec!["project".into()],
-                created_at: first_ts,
-                modified_at: first_ts,
-                last_active_at: first_ts,
+                created_at: earliest_ts,
+                modified_at: latest_ts,
+                last_active_at: latest_ts,
                 access_count: 1,
                 pinned: false,
                 degree: 0,
                 importance: 1.0,
                 freshness: 1.0,
+                is_ambient: false,
+                is_generic_root: is_generic_root_path(norm_path),
+                timestamp_source: Some("transcript".into()),
+                subkind: None,
+                hidden_by_default: false,
                 metadata: serde_json::json!({
                     "normalized_path": norm_path,
                 }),
@@ -681,14 +730,30 @@ impl AntigravityAdapter {
             edges.insert((conv_node_id.to_string(), p_id, EdgeKind::ProjectSession));
         }
 
-        // Update conversation node created_at if available
-        if let Some(ts) = first_ts {
-            if let Some(node) = nodes.get_mut(conv_node_id) {
-                if node.created_at.is_none() {
-                    node.created_at = Some(ts);
-                }
+        // Update conversation node with real transcript timestamps
+        if let Some(node) = nodes.get_mut(conv_node_id) {
+            if let Some(e) = earliest_ts {
+                node.created_at = Some(e);
+                node.timestamp_source = Some("transcript".into());
             }
+            if let Some(l) = latest_ts {
+                node.last_active_at = Some(l);
+            }
+        }
 
+        // Emit hourly activity bucket events
+        for (bucket_ts, count) in hourly_buckets {
+            events.push(Event {
+                id: format!("event:hourly:{}:{}", conv_uuid, bucket_ts.timestamp()),
+                ts: bucket_ts,
+                source_id: "antigravity".into(),
+                node_id: Some(conv_node_id.to_string()),
+                kind: EventKind::Activity,
+                detail: format!("{count} steps"),
+            });
+        }
+
+        if let Some(ts) = earliest_ts {
             events.push(Event {
                 id: format!("event:conv_start:{}", conv_uuid),
                 ts,
@@ -737,11 +802,6 @@ impl AntigravityAdapter {
                             let skill_node_id = format!("antigravity:skill:{}", title);
                             let preview = redact_and_truncate(desc, 300);
 
-                            let mtime = fs::metadata(&skill_file)
-                                .and_then(|m| m.modified())
-                                .ok()
-                                .map(DateTime::<Utc>::from);
-
                             nodes.insert(
                                 skill_node_id.clone(),
                                 Node {
@@ -752,19 +812,24 @@ impl AntigravityAdapter {
                                     body_preview: preview,
                                     path: Some(skill_file.to_string_lossy().to_string()),
                                     tags: vec!["skill".into(), "antigravity".into()],
-                                    created_at: mtime,
-                                    modified_at: mtime,
-                                    last_active_at: mtime,
+                                    created_at: None,
+                                    modified_at: None,
+                                    last_active_at: None,
                                     access_count: 1,
                                     pinned: false,
                                     degree: 0,
                                     importance: 0.6,
                                     freshness: 0.8,
+                                    is_ambient: true,
+                                    is_generic_root: false,
+                                    timestamp_source: None,
+                                    subkind: None,
+                                    hidden_by_default: false,
                                     metadata: Value::Null,
                                 },
                             );
 
-                            // Topic
+                            // Topic (Category)
                             let topic_id = "topic:antigravity_builtin".to_string();
                             nodes.entry(topic_id.clone()).or_insert_with(|| Node {
                                 id: topic_id.clone(),
@@ -774,14 +839,19 @@ impl AntigravityAdapter {
                                 body_preview: "Built-in Antigravity skills topic".into(),
                                 path: None,
                                 tags: vec!["topic".into()],
-                                created_at: mtime,
-                                modified_at: mtime,
-                                last_active_at: mtime,
+                                created_at: None,
+                                modified_at: None,
+                                last_active_at: None,
                                 access_count: 1,
                                 pinned: false,
                                 degree: 0,
                                 importance: 0.4,
                                 freshness: 0.8,
+                                is_ambient: true,
+                                is_generic_root: false,
+                                timestamp_source: None,
+                                subkind: Some("category".into()),
+                                hidden_by_default: false,
                                 metadata: Value::Null,
                             });
 

@@ -56,6 +56,38 @@ pub fn project_title_from_path(normalized_path: &str) -> String {
     normalized_path.to_string()
 }
 
+/// Checks whether a normalized project path is a user home directory, a drive root,
+/// or a generic system directory (e.g. C:\Users\luche, C:\).
+pub fn is_generic_root_path(normalized_path: &str) -> bool {
+    // 1. Drive root check: e.g. "c:", "c:\", "d:"
+    if normalized_path.len() <= 3 && normalized_path.contains(':') {
+        return true;
+    }
+
+    // 2. User home dir check
+    if let Some(home) = dirs::home_dir() {
+        let norm_home = normalize_project_path(&home.to_string_lossy());
+        if normalized_path == norm_home {
+            return true;
+        }
+    }
+
+    // 3. User profile env check
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let norm_profile = normalize_project_path(&profile);
+        if normalized_path == norm_profile {
+            return true;
+        }
+    }
+
+    // 4. Common root paths
+    if normalized_path == "/" || normalized_path == "\\root" || normalized_path == "c:\\users" {
+        return true;
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +112,16 @@ mod tests {
         let p1 = normalize_project_path("file:///c%3A/Users/luche/Documents/projects/0WEBSITEGAME");
         let p2 = normalize_project_path(r"C:\Users\luche\Documents\projects\0WEBSITEGAME");
         assert_eq!(project_node_id(&p1), project_node_id(&p2));
+    }
+
+    #[test]
+    fn test_generic_root_detection() {
+        assert!(is_generic_root_path("c:\\"));
+        assert!(is_generic_root_path("c:"));
+        if let Some(home) = dirs::home_dir() {
+            let norm_home = normalize_project_path(&home.to_string_lossy());
+            assert!(is_generic_root_path(&norm_home));
+        }
+        assert!(!is_generic_root_path(r"c:\users\luche\documents\projects\cortex"));
     }
 }

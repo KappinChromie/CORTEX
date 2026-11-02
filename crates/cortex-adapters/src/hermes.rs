@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use cortex_model::{
     AdapterHealth, AdapterWarning, Edge, EdgeKind, Event, EventKind, HealthStatus, Node, NodeKind,
     NodeId,
@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::antigravity::parse_frontmatter;
-use crate::path_norm::{normalize_project_path, project_node_id, project_title_from_path};
+use crate::path_norm::{
+    is_generic_root_path, normalize_project_path, project_node_id, project_title_from_path,
+};
 use crate::redaction::redact_and_truncate;
 use crate::sqlite_helpers::open_readonly_sqlite;
 
@@ -195,6 +197,11 @@ impl HermesAdapter {
                         degree: 0,
                         importance: 0.9,
                         freshness: 1.0,
+                        is_ambient: false,
+                        is_generic_root: false,
+                        timestamp_source: Some("mtime".into()),
+                        subkind: None,
+                        hidden_by_default: false,
                         metadata: serde_json::json!({
                             "type": "personality",
                         }),
@@ -353,6 +360,11 @@ impl HermesAdapter {
                             degree: 0,
                             importance: 1.0,
                             freshness: 1.0,
+                            is_ambient: false,
+                            is_generic_root: is_generic_root_path(&norm),
+                            timestamp_source: Some("session_db".into()),
+                            subkind: None,
+                            hidden_by_default: false,
                             metadata: serde_json::json!({
                                 "normalized_path": norm,
                             }),
@@ -384,14 +396,19 @@ impl HermesAdapter {
                                 body_preview: format!("Tool used by agents: {tool_name}"),
                                 path: None,
                                 tags: vec!["tool".into()],
-                                created_at,
-                                modified_at: last_active_at,
-                                last_active_at,
+                                created_at: None,
+                                modified_at: None,
+                                last_active_at: None,
                                 access_count: 0,
                                 pinned: false,
                                 degree: 0,
                                 importance: 0.5,
                                 freshness: 0.8,
+                                is_ambient: true,
+                                is_generic_root: false,
+                                timestamp_source: None,
+                                subkind: None,
+                                hidden_by_default: false,
                                 metadata: Value::Null,
                             });
 
@@ -406,7 +423,7 @@ impl HermesAdapter {
                         id: session_node_id.clone(),
                         source_id: "hermes".into(),
                         kind: NodeKind::Session,
-                        title: safe_title,
+                        title: safe_title.clone(),
                         body_preview: redact_and_truncate(&preview_text, 300),
                         path: Some(format!("~/.hermes/state.db:sessions:{id}")),
                         tags: vec!["hermes".into(), "session".into()],
@@ -418,6 +435,11 @@ impl HermesAdapter {
                         degree: 0,
                         importance: 0.7,
                         freshness: 0.9,
+                        is_ambient: false,
+                        is_generic_root: false,
+                        timestamp_source: Some("session_db".into()),
+                        subkind: None,
+                        hidden_by_default: false,
                         metadata: serde_json::json!({
                             "session_id": id,
                             "model": model_opt,
@@ -431,11 +453,53 @@ impl HermesAdapter {
                         id: format!("event:hermes_start:{id}"),
                         ts,
                         source_id: "hermes".into(),
-                        node_id: Some(session_node_id),
+                        node_id: Some(session_node_id.clone()),
                         kind: EventKind::SessionStarted,
-                        detail: format!("Hermes session started: {}", &id[..id.len().min(8)]),
+                        detail: format!("Hermes session started: {safe_title}"),
                     });
                 }
+                if let Some(ts) = last_active_at {
+                    events.push(Event {
+                        id: format!("event:hermes_end:{id}"),
+                        ts,
+                        source_id: "hermes".into(),
+                        node_id: Some(session_node_id.clone()),
+                        kind: EventKind::SessionEnded,
+                        detail: format!("Hermes session ended / last active: {safe_title}"),
+                    });
+                }
+            }
+        }
+
+        // Aggregate messages into hourly buckets per session
+        if let Ok(mut m_stmt) = conn.prepare("SELECT session_id, created_at FROM messages WHERE created_at IS NOT NULL") {
+            let mut msg_buckets: HashMap<(String, DateTime<Utc>), u32> = HashMap::new();
+            let m_rows = m_stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?))
+            });
+
+            if let Ok(m_rows) = m_rows {
+                for r in m_rows.flatten() {
+                    let (session_id, ts_opt) = r;
+                    if let Some(sec) = ts_opt {
+                        if let Some(dt) = DateTime::from_timestamp(sec as i64, ((sec.fract()) * 1e9) as u32) {
+                            if let Some(hb) = dt.date_naive().and_hms_opt(dt.time().hour(), 0, 0) {
+                                *msg_buckets.entry((session_id, hb.and_utc())).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for ((session_id, bucket_ts), count) in msg_buckets {
+                events.push(Event {
+                    id: format!("event:hourly_msg:{}:{}", session_id, bucket_ts.timestamp()),
+                    ts: bucket_ts,
+                    source_id: "hermes".into(),
+                    node_id: Some(format!("hermes:session:{}", session_id)),
+                    kind: EventKind::Activity,
+                    detail: format!("{count} messages"),
+                });
             }
         }
     }
@@ -465,7 +529,7 @@ impl HermesAdapter {
                             kind: NodeKind::Project,
                             title: if !name.is_empty() { name } else { project_title_from_path(&norm) },
                             body_preview: format!("Project workspace at {norm}"),
-                            path: Some(norm),
+                            path: Some(norm.clone()),
                             tags: vec!["project".into()],
                             created_at,
                             modified_at: created_at,
@@ -475,6 +539,11 @@ impl HermesAdapter {
                             degree: 0,
                             importance: 1.0,
                             freshness: 1.0,
+                            is_ambient: false,
+                            is_generic_root: is_generic_root_path(&norm),
+                            timestamp_source: Some("projects_db".into()),
+                            subkind: None,
+                            hidden_by_default: false,
                             metadata: Value::Null,
                         });
                     }
@@ -539,12 +608,28 @@ impl HermesAdapter {
                             degree: 0,
                             importance: 0.6,
                             freshness: 0.8,
+                            is_ambient: false,
+                            is_generic_root: false,
+                            timestamp_source: Some("kanban".into()),
+                            subkind: None,
+                            hidden_by_default: false,
                             metadata: serde_json::json!({
                                 "status": status,
                                 "task_id": task_id,
                             }),
                         },
                     );
+
+                    if let Some(c_time) = created_at {
+                        events.push(Event {
+                            id: format!("event:task_created:{task_id}"),
+                            ts: c_time,
+                            source_id: "hermes".into(),
+                            node_id: Some(task_node_id.clone()),
+                            kind: EventKind::TaskCreated,
+                            detail: format!("Task created: {title}"),
+                        });
+                    }
 
                     // Link to project if workspace_path is set
                     if let Some(ws_path) = ws_path_opt {
@@ -658,7 +743,6 @@ impl HermesAdapter {
                     .and_then(|v| v.as_str())
                     .unwrap_or_else(|| body.lines().next().unwrap_or(""));
 
-                let mtime = meta.modified().ok().map(DateTime::<Utc>::from);
                 let skill_node_id = format!("hermes:skill:{}", skill_name);
 
                 nodes.insert(
@@ -671,21 +755,26 @@ impl HermesAdapter {
                         body_preview: redact_and_truncate(desc, 300),
                         path: Some(path.to_string_lossy().to_string()),
                         tags: vec!["skill".into(), "hermes".into()],
-                        created_at: mtime,
-                        modified_at: mtime,
-                        last_active_at: mtime,
+                        created_at: None,
+                        modified_at: None,
+                        last_active_at: None,
                         access_count: 1,
                         pinned: false,
                         degree: 0,
                         importance: 0.6,
                         freshness: 0.8,
+                        is_ambient: true,
+                        is_generic_root: false,
+                        timestamp_source: None,
+                        subkind: None,
+                        hidden_by_default: false,
                         metadata: serde_json::json!({
                             "skill_name": skill_name,
                         }),
                     },
                 );
 
-                // Topic nodes from category
+                // Topic nodes from category (First-class Category topic)
                 if let Some(cat) = frontmatter.get("category").and_then(|v| v.as_str()) {
                     let topic_id = format!("topic:{}", cat);
                     nodes.entry(topic_id.clone()).or_insert_with(|| Node {
@@ -695,22 +784,27 @@ impl HermesAdapter {
                         title: cat.to_string(),
                         body_preview: format!("Skill category: {cat}"),
                         path: None,
-                        tags: vec!["topic".into()],
-                        created_at: mtime,
-                        modified_at: mtime,
-                        last_active_at: mtime,
+                        tags: vec!["topic".into(), "category".into()],
+                        created_at: None,
+                        modified_at: None,
+                        last_active_at: None,
                         access_count: 1,
                         pinned: false,
                         degree: 0,
                         importance: 0.5,
                         freshness: 0.8,
+                        is_ambient: true,
+                        is_generic_root: false,
+                        timestamp_source: None,
+                        subkind: Some("category".into()),
+                        hidden_by_default: false,
                         metadata: Value::Null,
                     });
 
                     edges.insert((skill_node_id.clone(), topic_id, EdgeKind::SkillTopic));
                 }
 
-                // Topic nodes from metadata.hermes.tags
+                // Topic nodes from metadata.hermes.tags (Demoted to Tag topic, hidden by default)
                 if let Some(meta_obj) = frontmatter.get("metadata").and_then(|v| v.as_object()) {
                     if let Some(hermes_val) = meta_obj.get("hermes").and_then(|v| v.as_object()) {
                         if let Some(tags_val) = hermes_val.get("tags").and_then(|v| v.as_array()) {
@@ -724,15 +818,20 @@ impl HermesAdapter {
                                         title: tag_str.to_string(),
                                         body_preview: format!("Topic: {tag_str}"),
                                         path: None,
-                                        tags: vec!["topic".into()],
-                                        created_at: mtime,
-                                        modified_at: mtime,
-                                        last_active_at: mtime,
+                                        tags: vec!["topic".into(), "tag".into()],
+                                        created_at: None,
+                                        modified_at: None,
+                                        last_active_at: None,
                                         access_count: 1,
                                         pinned: false,
                                         degree: 0,
                                         importance: 0.4,
                                         freshness: 0.8,
+                                        is_ambient: true,
+                                        is_generic_root: false,
+                                        timestamp_source: None,
+                                        subkind: Some("tag".into()),
+                                        hidden_by_default: true,
                                         metadata: Value::Null,
                                     });
 
@@ -803,6 +902,11 @@ impl HermesAdapter {
                         degree: 0,
                         importance: 0.7,
                         freshness: 0.9,
+                        is_ambient: false,
+                        is_generic_root: false,
+                        timestamp_source: Some("mtime".into()),
+                        subkind: None,
+                        hidden_by_default: false,
                         metadata: serde_json::json!({
                             "index": idx,
                             "file": filename,

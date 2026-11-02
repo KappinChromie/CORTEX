@@ -141,6 +141,11 @@ mod tests {
             degree: 0,
             importance: 0.0,
             freshness: 0.0,
+            is_ambient: false,
+            is_generic_root: false,
+            timestamp_source: None,
+            subkind: None,
+            hidden_by_default: false,
             metadata: serde_json::Value::Null,
         };
 
@@ -160,6 +165,11 @@ mod tests {
             degree: 0,
             importance: 0.0,
             freshness: 0.0,
+            is_ambient: false,
+            is_generic_root: false,
+            timestamp_source: None,
+            subkind: None,
+            hidden_by_default: false,
             metadata: serde_json::Value::Null,
         };
 
@@ -207,6 +217,11 @@ mod tests {
                 degree: 0,
                 importance: 0.0,
                 freshness: 0.0,
+                is_ambient: false,
+                is_generic_root: false,
+                timestamp_source: None,
+                subkind: None,
+                hidden_by_default: false,
                 metadata: serde_json::Value::Null,
             });
         }

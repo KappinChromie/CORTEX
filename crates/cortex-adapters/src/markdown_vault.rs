@@ -137,6 +137,11 @@ impl MarkdownVaultAdapter {
                         degree: 0,
                         importance: 0.5,
                         freshness: 0.8,
+                        is_ambient: false,
+                        is_generic_root: false,
+                        timestamp_source: Some("mtime".into()),
+                        subkind: None,
+                        hidden_by_default: false,
                         metadata: serde_json::Value::Null,
                     },
                 );
