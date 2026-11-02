@@ -280,10 +280,22 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               Last Active:{' '}
               <span style={{ color: '#e2e8f0' }}>
                 {node.last_active_at
-                  ? new Date(node.last_active_at).toLocaleString()
+                  ? new Date(node.last_active_at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+                  : node.modified_at
+                  ? new Date(node.modified_at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
                   : 'N/A'}
               </span>
             </div>
+            {node.kind === 'project' && (
+              <div>
+                Activity Date:{' '}
+                <span style={{ color: '#38bdf8', fontWeight: 600 }}>
+                  {node.last_active_at || node.modified_at
+                    ? new Date(node.last_active_at || node.modified_at!).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+                    : 'No recorded activity'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

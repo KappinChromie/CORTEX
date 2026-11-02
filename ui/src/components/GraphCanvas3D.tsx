@@ -3,13 +3,23 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Node, Edge, ViewMode, HybridNodeLayout } from '../types';
-import { getNodeColor, getNodeSize, getStarColorProfile } from '../utils/colors';
+import {
+  getNodeColor,
+  getNodeSize,
+  getStarColorProfile,
+  computeStarColorProfiles,
+  getProjectBasename,
+} from '../utils/colors';
 import { evaluateHybridPositions, generateOrbitRingsGeometry } from '../layouts/hybridLayout';
 import {
   evaluateEdgeStyle,
   computeBoundingSphereFraming,
   selectVisibleLabels,
+  computeStrongLinks,
+  computeArcControlPoint,
+  isEdgeGeometryValid,
   type ScreenLabelCandidate,
+  type LinksMode,
 } from '../utils/renderRules';
 import { PostProcessingManager, type QualityLevel } from './PostProcessingManager';
 
@@ -29,6 +39,7 @@ interface GraphCanvas3DProps {
   isOrbitAnimating: boolean;
   isOrbitRingsVisible: boolean;
   isStarGlowVisible: boolean;
+  linksMode?: LinksMode;
   quality: QualityLevel;
   onFrameStats?: (fps: number, frameTimeMs: number) => void;
   onDoubleClickNode?: (node: Node, shiftKey: boolean) => void;
@@ -36,7 +47,7 @@ interface GraphCanvas3DProps {
   onClearIsolation?: () => void;
 }
 
-// Camera controller that smoothly animates camera to selected node or frames all nodes using bounding sphere
+// Camera controller that frames project stars and anchors centered and as large as possible
 function CameraController({
   selectedNode,
   positionsRef,
@@ -55,12 +66,23 @@ function CameraController({
   const targetLookAt = useRef<THREE.Vector3 | null>(null);
   const hasInitiallyFramed = useRef<boolean>(false);
 
-  const applyBoundingSphereFraming = useCallback(() => {
+  const applyBoundingSphereFraming = useCallback((immediate: boolean = false) => {
     if (nodes.length === 0) return;
     const pts: [number, number, number][] = [];
+
+    // Focus on project stars and anchors to keep systems centered and large
     for (const node of nodes) {
-      const pos = positionsRef.current.get(node.id);
-      if (pos) pts.push(pos);
+      if (node.kind === 'project' || (node.kind === 'topic' && node.subkind === 'category')) {
+        const pos = positionsRef.current.get(node.id);
+        if (pos) pts.push(pos);
+      }
+    }
+    // Fallback to all nodes if no stars found
+    if (pts.length === 0) {
+      for (const node of nodes) {
+        const pos = positionsRef.current.get(node.id);
+        if (pos) pts.push(pos);
+      }
     }
     if (pts.length === 0) return;
 
@@ -70,13 +92,20 @@ function CameraController({
       targetLookAt.current = framing.center;
       targetCamPos.current = new THREE.Vector3(
         framing.center.x,
-        framing.center.y + framing.distance * 0.35,
-        framing.center.z + framing.distance * 0.95
+        framing.center.y + framing.distance * 0.32,
+        framing.center.z + framing.distance * 0.88
       );
+
+      if (immediate) {
+        camera.position.copy(targetCamPos.current);
+        camera.lookAt(targetLookAt.current);
+        targetCamPos.current = null;
+        targetLookAt.current = null;
+      }
     }
   }, [nodes, positionsRef, camera]);
 
-  // Initial camera framing on mount / when node positions arrive
+  // Initial camera framing on mount
   useEffect(() => {
     if (!hasInitiallyFramed.current && nodes.length > 0) {
       let count = 0;
@@ -85,22 +114,30 @@ function CameraController({
       }
       if (count > 0) {
         if (!selectedNode) {
-          applyBoundingSphereFraming();
+          applyBoundingSphereFraming(true);
         }
         hasInitiallyFramed.current = true;
       }
     }
   }, [nodes, positionsRef, applyBoundingSphereFraming, selectedNode]);
 
-  // Focus on selected node (search-to-fly or direct selection)
+  // Focus on selected node
   useEffect(() => {
     if (selectedNode) {
       const pos = positionsRef.current.get(selectedNode.id);
       if (pos) {
         targetLookAt.current = new THREE.Vector3(pos[0], pos[1], pos[2]);
-        const dist = Math.max(35, getNodeSize(selectedNode) * 4.5);
+        let dist = 65;
+        if (selectedNode.kind === 'project') {
+          dist = Math.max(140, getNodeSize(selectedNode) * 10);
+        } else if (selectedNode.kind === 'topic' && selectedNode.subkind === 'category') {
+          dist = 240; // Frame skill nebula cloud
+        } else if (selectedNode.kind === 'tool') {
+          dist = 85;
+        } else {
+          dist = Math.max(50, getNodeSize(selectedNode) * 6.0);
+        }
         targetCamPos.current = new THREE.Vector3(pos[0], pos[1] + dist * 0.35, pos[2] + dist * 0.95);
-        // Position camera immediately if first render
         camera.position.copy(targetCamPos.current);
         camera.lookAt(targetLookAt.current);
       }
@@ -110,7 +147,7 @@ function CameraController({
   // Reset view & Frame all triggers
   useEffect(() => {
     if (resetViewTrigger > 0 || frameAllTrigger > 0) {
-      applyBoundingSphereFraming();
+      applyBoundingSphereFraming(false);
     }
   }, [resetViewTrigger, frameAllTrigger, applyBoundingSphereFraming]);
 
@@ -130,80 +167,48 @@ function CameraController({
   return null;
 }
 
-// Free-fly camera controller (WASD + mouse look, Q/E up/down, hold Shift for speed boost)
+// First-person fly controls
 function FreeFlyController({ enabled }: { enabled: boolean }) {
-  const { camera, gl } = useThree();
-  const keysDown = useRef<Record<string, boolean>>({});
-  const isMouseDown = useRef<boolean>(false);
-  const prevMouse = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const euler = useRef(new THREE.Euler(0, 0, 0, 'YXZ'));
+  const { camera } = useThree();
+  const keys = useRef<{ [k: string]: boolean }>({});
 
   useEffect(() => {
     if (!enabled) return;
-    euler.current.setFromQuaternion(camera.quaternion);
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      keysDown.current[e.key.toLowerCase()] = true;
+    const down = (e: KeyboardEvent) => {
+      keys.current[e.key.toLowerCase()] = true;
     };
-    const onKeyUp = (e: KeyboardEvent) => {
-      keysDown.current[e.key.toLowerCase()] = false;
+    const up = (e: KeyboardEvent) => {
+      keys.current[e.key.toLowerCase()] = false;
     };
-    const onMouseDown = (e: MouseEvent) => {
-      if (e.button === 0 || e.button === 2) {
-        isMouseDown.current = true;
-        prevMouse.current = { x: e.clientX, y: e.clientY };
-      }
-    };
-    const onMouseUp = () => {
-      isMouseDown.current = false;
-    };
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isMouseDown.current) return;
-      const dx = e.clientX - prevMouse.current.x;
-      const dy = e.clientY - prevMouse.current.y;
-      prevMouse.current = { x: e.clientX, y: e.clientY };
-
-      euler.current.y -= dx * 0.003;
-      euler.current.x = Math.max(-1.4, Math.min(1.4, euler.current.x - dy * 0.003));
-      camera.quaternion.setFromEuler(euler.current);
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    gl.domElement.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mouseup', onMouseUp);
-    window.addEventListener('mousemove', onMouseMove);
-
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      gl.domElement.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mouseup', onMouseUp);
-      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
     };
-  }, [enabled, camera, gl]);
+  }, [enabled]);
 
   useFrame((_, delta) => {
     if (!enabled) return;
-    const isShift = keysDown.current['shift'];
-    const speed = (isShift ? 600 : 200) * delta;
+    const speed = 240 * delta;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const side = new THREE.Vector3().crossVectors(dir, camera.up).normalize();
 
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-
-    if (keysDown.current['w']) camera.position.addScaledVector(forward, speed);
-    if (keysDown.current['s']) camera.position.addScaledVector(forward, -speed);
-    if (keysDown.current['d']) camera.position.addScaledVector(right, speed);
-    if (keysDown.current['a']) camera.position.addScaledVector(right, -speed);
-    if (keysDown.current['e']) camera.position.y += speed;
-    if (keysDown.current['q']) camera.position.y -= speed;
+    if (keys.current['w']) camera.position.addScaledVector(dir, speed);
+    if (keys.current['s']) camera.position.addScaledVector(dir, -speed);
+    if (keys.current['a']) camera.position.addScaledVector(side, -speed);
+    if (keys.current['d']) camera.position.addScaledVector(side, speed);
+    if (keys.current['q'] || keys.current['e']) {
+      camera.position.y += (keys.current['e'] ? 1 : -1) * speed;
+    }
   });
 
   return null;
 }
 
-// Nodes layer: renders celestial bodies (stars, planets with atmosphere, moons, category anchors)
+// Instanced Spheres Layer for Planets, Moons, Category Anchors, and Personas
+// (Stars are rendered exclusively via StarGlowLayer as emissive luminous bodies)
 function NodesLayer({
   nodes,
   positionsRef,
@@ -223,12 +228,12 @@ function NodesLayer({
   onDoubleClickNode?: (node: Node, shiftKey: boolean) => void;
   dimmedNodeIds?: Set<string>;
 }) {
+  const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 24, 24), []);
   const meshRef = useRef<THREE.InstancedMesh>(null);
-  const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 20, 20), []);
 
-  // Separate non-tool and non-skill nodes (tools and skills have specialized geometric representations)
+  // Exclude tools, skills, and project stars (stars are handled by StarGlowLayer)
   const sphereNodes = useMemo(
-    () => nodes.filter((n) => n.kind !== 'tool' && n.kind !== 'skill'),
+    () => nodes.filter((n) => n.kind !== 'tool' && n.kind !== 'skill' && n.kind !== 'project'),
     [nodes]
   );
 
@@ -238,7 +243,6 @@ function NodesLayer({
   const tempQuat = useMemo(() => new THREE.Quaternion(), []);
   const tempColor = useMemo(() => new THREE.Color(), []);
 
-  // Update instance matrices and colors every frame
   useFrame(() => {
     if (!meshRef.current || sphereNodes.length === 0) return;
     const mesh = meshRef.current;
@@ -312,7 +316,7 @@ function NodesLayer({
   );
 }
 
-// Distinct geometry for Tool nodes: technical station ring (torus) rotating slowly
+// Technical station torus for Tool nodes rotating slowly
 function ToolHubsLayer({
   tools,
   positionsRef,
@@ -359,12 +363,10 @@ function ToolHubsLayer({
       tempPos.set(pos[0], pos[1], pos[2]);
       tempScale.set(radius, radius, radius);
 
-      // Continuous slow technical rotation around Y and Z
       tempQuat.setFromEuler(new THREE.Euler(0.4, time * 0.6 + i * 0.2, time * 0.3 + i * 0.1));
       tempMatrix.compose(tempPos, tempQuat, tempScale);
       mesh.setMatrixAt(i, tempMatrix);
 
-      // Technical cyan
       tempColor.set('#06b6d4');
       if (isDimmed) {
         tempColor.lerp(new THREE.Color('#1e293b'), 0.85);
@@ -418,7 +420,7 @@ function ToolHubsLayer({
   );
 }
 
-// Skill nebula: glowing particle clouds for category skills
+// Skill nebula: glowing particle dust clouds per category anchor
 function SkillNebulaLayer({
   skills,
   positionsRef,
@@ -429,12 +431,35 @@ function SkillNebulaLayer({
   const pointsGeo = useMemo(() => {
     const pts: number[] = [];
     const colors: number[] = [];
-    const color = new THREE.Color('#818cf8');
 
-    for (const skill of skills) {
+    const palette = [
+      new THREE.Color('#818cf8'),
+      new THREE.Color('#6366f1'),
+      new THREE.Color('#a855f7'),
+      new THREE.Color('#38bdf8'),
+    ];
+
+    for (let idx = 0; idx < skills.length; idx++) {
+      const skill = skills[idx];
       const pos = positionsRef.current.get(skill.id) || [0, 0, 0];
+      const baseCol = palette[idx % palette.length];
+
+      // Center anchor particle
       pts.push(pos[0], pos[1], pos[2]);
-      colors.push(color.r, color.g, color.b);
+      colors.push(baseCol.r, baseCol.g, baseCol.b);
+
+      // Surrounding volumetric micro-particles for glowing cloud appearance
+      for (let j = 0; j < 6; j++) {
+        const angle = (j / 6) * Math.PI * 2 + (idx * 0.5);
+        const r = 10.0 + ((idx * 7 + j * 13) % 15);
+        const dx = Math.cos(angle) * r;
+        const dy = Math.sin(angle * 1.5) * (r * 0.4);
+        const dz = Math.sin(angle) * r;
+
+        pts.push(pos[0] + dx, pos[1] + dy, pos[2] + dz);
+        const c = baseCol.clone().offsetHSL(0, 0, 0.1);
+        colors.push(c.r, c.g, c.b);
+      }
     }
 
     const geo = new THREE.BufferGeometry();
@@ -443,7 +468,6 @@ function SkillNebulaLayer({
     return geo;
   }, [skills, positionsRef]);
 
-  // Texture for soft glowing circular particles
   const particleTexture = useMemo(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 64;
@@ -452,14 +476,13 @@ function SkillNebulaLayer({
     if (ctx) {
       const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
       grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
-      grad.addColorStop(0.3, 'rgba(165, 180, 252, 0.85)');
-      grad.addColorStop(0.7, 'rgba(99, 102, 241, 0.25)');
+      grad.addColorStop(0.25, 'rgba(199, 210, 254, 0.85)');
+      grad.addColorStop(0.65, 'rgba(99, 102, 241, 0.3)');
       grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, 64, 64);
     }
-    const tex = new THREE.CanvasTexture(canvas);
-    return tex;
+    return new THREE.CanvasTexture(canvas);
   }, []);
 
   if (skills.length === 0) return null;
@@ -467,11 +490,11 @@ function SkillNebulaLayer({
   return (
     <points geometry={pointsGeo}>
       <pointsMaterial
-        size={20}
+        size={26}
         sizeAttenuation
         map={particleTexture}
         transparent
-        opacity={0.92}
+        opacity={0.9}
         blending={THREE.AdditiveBlending}
         depthWrite={false}
         vertexColors
@@ -480,24 +503,32 @@ function SkillNebulaLayer({
   );
 }
 
-// Star emissive cores and glowing pulsating coronas with color temperature
+// Star luminous cores and glowing pulsating coronas with relative percentile color temperature
+// (Unified rendering: eliminates duplicate standard sphere and inner white artifact)
 function StarGlowLayer({
   nodes,
   positionsRef,
   isStarGlowVisible,
+  onSelectNode,
+  onHoverNode,
 }: {
   nodes: Node[];
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
   isStarGlowVisible: boolean;
+  onSelectNode: (node: Node | null) => void;
+  onHoverNode: (node: Node | null) => void;
 }) {
-  const coronaGeo = useMemo(() => new THREE.SphereGeometry(1, 24, 24), []);
+  const coronaGeo = useMemo(() => new THREE.SphereGeometry(1, 28, 28), []);
+  const coreGeo = useMemo(() => new THREE.SphereGeometry(1, 28, 28), []);
   const starNodes = useMemo(() => nodes.filter((n) => n.kind === 'project'), [nodes]);
+
+  // Compute relative activity temperature percentile profiles for all stars
+  const profilesMap = useMemo(() => computeStarColorProfiles(starNodes), [starNodes]);
   const groupRef = useRef<THREE.Group>(null);
 
   useFrame((state) => {
     if (!groupRef.current) return;
     const time = state.clock.getElapsedTime();
-    // Subtle pulsating oscillation
     const pulse = 1.0 + Math.sin(time * 1.6) * 0.08;
     const children = groupRef.current.children;
     for (let i = 0; i < children.length; i++) {
@@ -516,30 +547,42 @@ function StarGlowLayer({
     <group ref={groupRef}>
       {starNodes.map((star) => {
         const pos = positionsRef.current.get(star.id) || [0, 0, 0];
-        const profile = getStarColorProfile(star);
+        const profile = getStarColorProfile(star, profilesMap);
         const baseSize = getNodeSize(star);
-        const coronaScale = baseSize * (star.is_generic_root ? 1.6 : 2.5);
+        const coronaScale = baseSize * (star.is_generic_root ? 1.5 : 2.2);
 
         return (
           <group
             key={`star-system-${star.id}`}
             position={[pos[0], pos[1], pos[2]]}
             userData={{ baseScale: coronaScale }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectNode(star);
+            }}
+            onPointerMove={(e) => {
+              e.stopPropagation();
+              document.body.style.cursor = 'pointer';
+              onHoverNode(star);
+            }}
+            onPointerOut={() => {
+              document.body.style.cursor = 'default';
+              onHoverNode(null);
+            }}
           >
-            {/* Soft outer corona halo */}
+            {/* Outer pulsating corona halo */}
             <mesh geometry={coronaGeo} scale={[coronaScale, coronaScale, coronaScale]}>
               <meshBasicMaterial
                 color={profile.coronaColor}
                 transparent
-                opacity={star.is_generic_root ? 0.12 : 0.28}
+                opacity={star.is_generic_root ? 0.14 : 0.35}
                 blending={THREE.AdditiveBlending}
                 depthWrite={false}
               />
             </mesh>
 
-            {/* Inner emissive core */}
-            <mesh scale={[baseSize * 0.9, baseSize * 0.9, baseSize * 0.9]}>
-              <sphereGeometry args={[1, 24, 24]} />
+            {/* Central luminous stellar core (clean single surface without nested white mark) */}
+            <mesh geometry={coreGeo} scale={[baseSize, baseSize, baseSize]}>
               <meshBasicMaterial color={profile.coreColor} toneMapped={false} />
             </mesh>
           </group>
@@ -549,7 +592,7 @@ function StarGlowLayer({
   );
 }
 
-// Selection and Hover rings for smooth targeting without snapping
+// Selection and Hover highlight rings
 function SelectionRingLayer({
   selectedNode,
   hoveredNode,
@@ -625,7 +668,7 @@ function SelectionRingLayer({
   );
 }
 
-// Orbit rings layer with faint circular orbits, brightening for hovered system
+// Orbit rings layer: concentric planetary paths, clear and luminous near camera
 function OrbitRingsLayer({
   nodes,
   hybridLayout,
@@ -667,7 +710,7 @@ function OrbitRingsLayer({
       <lineBasicMaterial
         color="#818cf8"
         transparent
-        opacity={isSystemActive ? 0.65 : 0.22}
+        opacity={isSystemActive ? 0.75 : 0.32}
         blending={THREE.AdditiveBlending}
         depthWrite={false}
       />
@@ -675,8 +718,12 @@ function OrbitRingsLayer({
   );
 }
 
-// Labels layer: shows titles adhering to policy (stars always, planets within proximity, category anchors, hovered/selected)
-// with screen-space collision avoidance capped at 40 labels
+// Legible Labels Layer adhering to policy:
+// - Min 12px font size with dark translucent backing
+// - Human-readable project basenames
+// - "Unaffiliated (home folder)" for generic roots
+// - Clean category count suffixes
+// - Up to 25 labels at default overview with collision avoidance
 function LabelsLayer({
   nodes,
   positionsRef,
@@ -696,7 +743,6 @@ function LabelsLayer({
 
   useFrame(() => {
     frameCount.current++;
-    // Project and check collision every 3 frames for smooth 60fps performance
     if (frameCount.current % 3 !== 0) return;
 
     const candidates: ScreenLabelCandidate[] = [];
@@ -709,15 +755,17 @@ function LabelsLayer({
 
       const isSelected = selectedNode?.id === node.id;
       const isHovered = hoveredNode?.id === node.id;
-      const isStar = node.kind === 'project' && !node.is_generic_root;
+      const isStar = node.kind === 'project';
       const isCat = node.kind === 'topic' && node.subkind === 'category';
       const isPlanet = node.kind === 'conversation' || node.kind === 'session';
+      const isMoon = node.kind === 'artifact' || node.kind === 'task' || node.kind === 'memory';
 
-      // Label Policy Check:
+      // Label Policy:
       // - Hovered / Selected: always
-      // - Star: always
-      // - Category anchor: always in nebula
-      // - Planet: only when camera distance to parent star is < 280
+      // - Stars: always
+      // - Category anchor: always
+      // - Planet: when camera is within 260 units of parent star
+      // - Moons: ONLY on hover or select
       let eligible = isSelected || isHovered || isStar || isCat;
 
       if (!eligible && isPlanet) {
@@ -728,42 +776,41 @@ function LabelsLayer({
             const distToStar = camPos.distanceTo(
               new THREE.Vector3(starPos[0], starPos[1], starPos[2])
             );
-            if (distToStar < 280.0) {
+            if (distToStar < 260.0) {
               eligible = true;
             }
           }
         }
       }
 
-      if (!eligible) continue;
+      if (!eligible || (isMoon && !isSelected && !isHovered)) continue;
 
-      // Project 3D position into 2D NDC
       const v = new THREE.Vector3(pos[0], pos[1] + (isStar ? 12 : 6), pos[2]);
       const cameraDist = camPos.distanceTo(v);
       v.project(camera);
 
-      // Must be in front of camera
       if (v.z < -1 || v.z > 1) continue;
-      // Bounded within screen with 10% margin
       if (v.x < -1.1 || v.x > 1.1 || v.y < -1.1 || v.y > 1.1) continue;
 
       const sx = (v.x * 0.5 + 0.5) * size.width;
       const sy = (-v.y * 0.5 + 0.5) * size.height;
 
-      // Suppress labels that project behind top header/filter bar (top 100px) or side panel (right 400px when active)
+      // Suppress labels behind top header/filter bar (top 100px) or side panel
       if (sy < 100 || sy > size.height - 40 || sx < 30 || sx > size.width - 30) continue;
       if (selectedNode && sx > size.width - 400) continue;
 
-      const width = Math.min(180, Math.max(60, node.title.length * 7 + 16));
-      const height = 24;
+      const titleLen = (node.title || '').length;
+      const width = Math.min(220, Math.max(80, titleLen * 8 + 24));
+      const height = 28;
 
       const priority =
         (isSelected ? 5000 : 0) +
         (isHovered ? 2500 : 0) +
-        (isStar ? 400 : 0) +
-        (isCat ? 200 : 0) +
-        (isPlanet ? 100 : 0) +
-        node.importance * 10;
+        (isStar ? 500 : 0) +
+        (isCat ? 300 : 0) +
+        (isPlanet ? 150 : 0) +
+        node.importance * 100 +
+        node.degree * 5;
 
       candidates.push({
         id: node.id,
@@ -781,7 +828,8 @@ function LabelsLayer({
       });
     }
 
-    const accepted = selectVisibleLabels(candidates, 40);
+    // Cap at 25 visible labels at overview with collision avoidance
+    const accepted = selectVisibleLabels(candidates, 25);
     setVisibleLabels(accepted);
   });
 
@@ -792,12 +840,33 @@ function LabelsLayer({
         const isSelected = selectedNode?.id === node.id;
         const isHovered = hoveredNode?.id === node.id;
 
-        // Smooth distance fade for star labels
         const opacity = isSelected || isHovered
           ? 1.0
           : isStar
-          ? Math.max(0.35, Math.min(1.0, 1.25 - cameraDist / 1800))
-          : 0.9;
+          ? Math.max(0.45, Math.min(1.0, 1.25 - cameraDist / 2000))
+          : 0.92;
+
+        let displayText = node.title;
+        let countSuffix = '';
+
+        if (node.kind === 'project') {
+          if (node.is_generic_root) {
+            displayText = 'Unaffiliated (home folder)';
+          } else {
+            displayText = getProjectBasename(node.title, node.path);
+          }
+        } else if (node.kind === 'topic' && node.subkind === 'category') {
+          const match = node.title.match(/^(\d+)\s+(.*)$/);
+          if (match) {
+            displayText = match[2];
+            countSuffix = ` (${match[1]})`;
+          } else {
+            displayText = node.title;
+            if (node.degree > 0) {
+              countSuffix = ` (${node.degree})`;
+            }
+          }
+        }
 
         return (
           <Html
@@ -810,7 +879,8 @@ function LabelsLayer({
               pointerEvents: 'none',
               userSelect: 'none',
               whiteSpace: 'nowrap',
-              fontSize: isSelected || isHovered ? '12px' : isStar ? '11px' : '9px',
+              fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+              fontSize: isSelected || isHovered ? '13px' : isStar ? '13px' : '12px',
               fontWeight: isStar ? 700 : 600,
               opacity,
               color: isSelected
@@ -818,28 +888,33 @@ function LabelsLayer({
                 : isHovered
                 ? '#f8fafc'
                 : isStar
-                ? '#e2e8f0'
+                ? '#f1f5f9'
                 : isCat
                 ? '#38bdf8'
                 : '#94a3b8',
               backgroundColor: isSelected || isHovered
-                ? 'rgba(15, 23, 42, 0.9)'
-                : 'rgba(15, 23, 42, 0.65)',
-              padding: '2px 7px',
-              borderRadius: '5px',
+                ? 'rgba(15, 23, 42, 0.95)'
+                : 'rgba(15, 23, 42, 0.85)',
+              padding: '3px 8px',
+              borderRadius: '6px',
               border: `1px solid ${
                 isSelected
-                  ? 'rgba(56, 189, 248, 0.6)'
+                  ? 'rgba(56, 189, 248, 0.7)'
                   : isHovered
-                  ? 'rgba(248, 250, 252, 0.4)'
-                  : 'rgba(148, 163, 184, 0.2)'
+                  ? 'rgba(248, 250, 252, 0.5)'
+                  : 'rgba(148, 163, 184, 0.25)'
               }`,
-              textShadow: '0 2px 4px rgba(0,0,0,0.9)',
-              boxShadow: isSelected || isHovered ? '0 0 10px rgba(56, 189, 248, 0.3)' : 'none',
+              textShadow: '0 1px 3px rgba(0,0,0,0.95)',
+              boxShadow: isSelected || isHovered ? '0 0 12px rgba(56, 189, 248, 0.35)' : '0 2px 6px rgba(0,0,0,0.5)',
               letterSpacing: '0.02em',
             }}
           >
-            {isCat ? `§ ${node.title}` : node.title}
+            <span>{isCat ? `§ ${displayText}` : displayText}</span>
+            {countSuffix && (
+              <span style={{ fontSize: '10px', opacity: 0.7, marginLeft: 4 }}>
+                {countSuffix}
+              </span>
+            )}
           </Html>
         );
       })}
@@ -847,7 +922,8 @@ function LabelsLayer({
   );
 }
 
-// Edges layer: hides skill-to-category and tag hairballs; renders cross-system edges as thin curved arcs
+// Edges Layer: Real-time animated arcs pinned to moving planets each frame
+// Supports LinksMode: Off / Strong (top 30 links, tool hubs hidden) / All (up to 400 links)
 function EdgesLayer({
   edges,
   nodes,
@@ -855,6 +931,7 @@ function EdgesLayer({
   hoveredNode,
   selectedNode,
   currentMode,
+  linksMode = 'strong',
 }: {
   edges: Edge[];
   nodes: Node[];
@@ -862,6 +939,7 @@ function EdgesLayer({
   hoveredNode: Node | null;
   selectedNode: Node | null;
   currentMode: ViewMode;
+  linksMode?: LinksMode;
 }) {
   const nodesById = useMemo(() => {
     const map = new Map<string, Node>();
@@ -869,78 +947,137 @@ function EdgesLayer({
     return map;
   }, [nodes]);
 
-  const { normalLinesGeo, highlightLinesGeo } = useMemo(() => {
-    const normalPts: number[] = [];
-    const highlightPts: number[] = [];
+  // Compute top 30 strong links
+  const strongLinksSet = useMemo(() => {
+    return computeStrongLinks(edges, nodesById, 30);
+  }, [edges, nodesById]);
 
+  // Fixed pre-allocated geometries for fluid 60fps updates without garbage collection
+  const normalGeoRef = useRef<THREE.BufferGeometry>(new THREE.BufferGeometry());
+  const highlightGeoRef = useRef<THREE.BufferGeometry>(new THREE.BufferGeometry());
+
+  // Buffer capacity: up to 400 arcs * 16 vertices * 3 coords = 19,200 floats
+  const normalBuffer = useMemo(() => new Float32Array(400 * 16 * 3), []);
+  const highlightBuffer = useMemo(() => new Float32Array(100 * 16 * 3), []);
+
+  useEffect(() => {
+    normalGeoRef.current.setAttribute(
+      'position',
+      new THREE.BufferAttribute(normalBuffer, 3).setUsage(THREE.DynamicDrawUsage)
+    );
+    highlightGeoRef.current.setAttribute(
+      'position',
+      new THREE.BufferAttribute(highlightBuffer, 3).setUsage(THREE.DynamicDrawUsage)
+    );
+  }, [normalBuffer, highlightBuffer]);
+
+  useFrame(() => {
     const activeId = hoveredNode?.id || selectedNode?.id;
+    let normalIdx = 0;
+    let highlightIdx = 0;
+    let visibleCount = 0;
+    const maxVisibleArcs = linksMode === 'all' ? 400 : 30;
 
-    for (const edge of edges) {
+    for (let i = 0; i < edges.length; i++) {
+      if (visibleCount >= maxVisibleArcs && !activeId) break;
+
+      const edge = edges[i];
+      const isTopStrong = strongLinksSet.has(i);
+
       const style = evaluateEdgeStyle(
         edge,
         nodesById,
         hoveredNode?.id,
         selectedNode?.id,
-        currentMode === 'hybrid'
+        currentMode === 'hybrid',
+        linksMode,
+        isTopStrong
       );
 
       if (style !== 'curved_arc') continue;
 
+      // Current live positions each frame
       const p1 = positionsRef.current.get(edge.from);
       const p2 = positionsRef.current.get(edge.to);
       if (!p1 || !p2) continue;
 
+      // Sanitize: verify finite and within 2500 unit galaxy bounds
+      if (!isEdgeGeometryValid(p1, p2, 2500)) continue;
+
       const v1 = new THREE.Vector3(p1[0], p1[1], p1[2]);
       const v2 = new THREE.Vector3(p2[0], p2[1], p2[2]);
-      const dist = v1.distanceTo(v2);
 
-      const mid = new THREE.Vector3().addVectors(v1, v2).multiplyScalar(0.5);
-      const arcHeight = Math.min(60.0, dist * 0.22);
-      mid.y += arcHeight;
-
-      const curve = new THREE.QuadraticBezierCurve3(v1, mid, v2);
-      const points = curve.getPoints(8);
+      // Compute deterministic outward control point
+      const ctrl = computeArcControlPoint(v1, v2, edge.from, edge.to);
 
       const isHighlight =
         activeId && (edge.from === activeId || edge.to === activeId);
-      const targetPts = isHighlight ? highlightPts : normalPts;
 
-      for (let j = 0; j < points.length - 1; j++) {
-        targetPts.push(
-          points[j].x, points[j].y, points[j].z,
-          points[j + 1].x, points[j + 1].y, points[j + 1].z
-        );
+      // Generate 8 segments along quadratic bezier
+      let prevX = v1.x;
+      let prevY = v1.y;
+      let prevZ = v1.z;
+
+      for (let s = 1; s <= 8; s++) {
+        const t = s / 8;
+        const mt = 1 - t;
+        const curX = mt * mt * v1.x + 2 * mt * t * ctrl.x + t * t * v2.x;
+        const curY = mt * mt * v1.y + 2 * mt * t * ctrl.y + t * t * v2.y;
+        const curZ = mt * mt * v1.z + 2 * mt * t * ctrl.z + t * t * v2.z;
+
+        if (isHighlight && highlightIdx + 6 <= highlightBuffer.length) {
+          highlightBuffer[highlightIdx++] = prevX;
+          highlightBuffer[highlightIdx++] = prevY;
+          highlightBuffer[highlightIdx++] = prevZ;
+          highlightBuffer[highlightIdx++] = curX;
+          highlightBuffer[highlightIdx++] = curY;
+          highlightBuffer[highlightIdx++] = curZ;
+        } else if (!isHighlight && normalIdx + 6 <= normalBuffer.length) {
+          normalBuffer[normalIdx++] = prevX;
+          normalBuffer[normalIdx++] = prevY;
+          normalBuffer[normalIdx++] = prevZ;
+          normalBuffer[normalIdx++] = curX;
+          normalBuffer[normalIdx++] = curY;
+          normalBuffer[normalIdx++] = curZ;
+        }
+
+        prevX = curX;
+        prevY = curY;
+        prevZ = curZ;
       }
+
+      visibleCount++;
     }
 
-    const nGeo = new THREE.BufferGeometry();
-    nGeo.setAttribute('position', new THREE.Float32BufferAttribute(normalPts, 3));
+    // Update draw ranges
+    normalGeoRef.current.setDrawRange(0, normalIdx / 3);
+    const normAttr = normalGeoRef.current.getAttribute('position') as THREE.BufferAttribute;
+    if (normAttr) normAttr.needsUpdate = true;
 
-    const hGeo = new THREE.BufferGeometry();
-    hGeo.setAttribute('position', new THREE.Float32BufferAttribute(highlightPts, 3));
-
-    return { normalLinesGeo: nGeo, highlightLinesGeo: hGeo };
-  }, [edges, nodesById, positionsRef, hoveredNode, selectedNode, currentMode]);
+    highlightGeoRef.current.setDrawRange(0, highlightIdx / 3);
+    const hlAttr = highlightGeoRef.current.getAttribute('position') as THREE.BufferAttribute;
+    if (hlAttr) hlAttr.needsUpdate = true;
+  });
 
   return (
     <group>
-      {/* Subtle ambient cross-system curved arcs */}
-      <lineSegments geometry={normalLinesGeo}>
+      {/* Thin subtle ambient cross-system links */}
+      <lineSegments geometry={normalGeoRef.current}>
         <lineBasicMaterial
           color="#818cf8"
           transparent
-          opacity={0.14}
+          opacity={0.11}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
       </lineSegments>
 
-      {/* Bright highlighted curved arcs for active hovered/selected node */}
-      <lineSegments geometry={highlightLinesGeo}>
+      {/* Bright highlighted links for active hovered or selected node */}
+      <lineSegments geometry={highlightGeoRef.current}>
         <lineBasicMaterial
           color="#38bdf8"
           transparent
-          opacity={0.85}
+          opacity={0.88}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
@@ -965,30 +1102,25 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
   isOrbitAnimating,
   isOrbitRingsVisible,
   isStarGlowVisible,
+  linksMode = 'strong',
   quality,
   onFrameStats,
   onDoubleClickNode,
   dimmedNodeIds,
   onClearIsolation,
 }) => {
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [, setMousePos] = useState({ x: 0, y: 0 });
 
-  // Separate Tool nodes and Skill nodes for specialized rendering
   const toolNodes = useMemo(() => nodes.filter((n) => n.kind === 'tool'), [nodes]);
   const skillNodes = useMemo(() => nodes.filter((n) => n.kind === 'skill'), [nodes]);
 
-  // Current analytical or static positions of nodes
   const positionsRef = useRef<Map<string, [number, number, number]>>(new Map());
-
-  // Simulation time for analytical orbits
   const simTime = useRef<number>(0);
 
-  // Transition state when switching between web and hybrid modes (1-second eased lerp)
   const isTransitioning = useRef<boolean>(false);
   const transitionStart = useRef<number>(0);
   const fromPositions = useRef<Map<string, [number, number, number]>>(new Map());
 
-  // When mode changes, start transition
   const prevMode = useRef<ViewMode>(currentMode);
   useEffect(() => {
     if (prevMode.current !== currentMode) {
@@ -999,9 +1131,7 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
     }
   }, [currentMode]);
 
-  // Main animation loop: updates analytical positions and handles mode transitions
   const updatePositions = (delta: number) => {
-    // Advance simulation time only when orbital animation is active and not hovered/selected
     if (isOrbitAnimating && !hoveredNode && !selectedNode) {
       simTime.current += delta * 0.45;
     }
@@ -1015,74 +1145,75 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
         isTransitioning.current = false;
         transitionFactor = 1.0;
       } else {
-        // Smoothstep easing: 3t^2 - 2t^3
         transitionFactor = elapsed * elapsed * (3 - 2 * elapsed);
       }
     }
 
     if (currentMode === 'hybrid') {
-      const targetPos = evaluateHybridPositions(nodes, hybridLayout, simTime.current);
+      const currentSimTime = simTime.current;
+      const hybridPos = evaluateHybridPositions(nodes, hybridLayout, currentSimTime);
+      for (const [id, pos] of hybridPos.entries()) {
+        positionsRef.current.set(id, pos);
+      }
+
       if (isTransitioning.current) {
-        for (const [id, tPos] of targetPos) {
-          const fPos = fromPositions.current.get(id) || tPos;
-          positionsRef.current.set(id, [
-            fPos[0] + (tPos[0] - fPos[0]) * transitionFactor,
-            fPos[1] + (tPos[1] - fPos[1]) * transitionFactor,
-            fPos[2] + (tPos[2] - fPos[2]) * transitionFactor,
-          ]);
+        for (const [id, toPos] of positionsRef.current.entries()) {
+          const fromPos = fromPositions.current.get(id);
+          if (fromPos) {
+            positionsRef.current.set(id, [
+              fromPos[0] + (toPos[0] - fromPos[0]) * transitionFactor,
+              fromPos[1] + (toPos[1] - fromPos[1]) * transitionFactor,
+              fromPos[2] + (toPos[2] - fromPos[2]) * transitionFactor,
+            ]);
+          }
         }
-      } else {
-        positionsRef.current = targetPos;
       }
     } else {
-      // Web (3D force) mode
-      if (isTransitioning.current) {
-        for (const [id, tPos] of webPositions) {
-          const fPos = fromPositions.current.get(id) || tPos;
-          positionsRef.current.set(id, [
-            fPos[0] + (tPos[0] - fPos[0]) * transitionFactor,
-            fPos[1] + (tPos[1] - fPos[1]) * transitionFactor,
-            fPos[2] + (tPos[2] - fPos[2]) * transitionFactor,
-          ]);
+      for (const node of nodes) {
+        const toPos = webPositions.get(node.id) || [0, 0, 0];
+        if (isTransitioning.current) {
+          const fromPos = fromPositions.current.get(node.id);
+          if (fromPos) {
+            positionsRef.current.set(node.id, [
+              fromPos[0] + (toPos[0] - fromPos[0]) * transitionFactor,
+              fromPos[1] + (toPos[1] - fromPos[1]) * transitionFactor,
+              fromPos[2] + (toPos[2] - fromPos[2]) * transitionFactor,
+            ]);
+          } else {
+            positionsRef.current.set(node.id, toPos);
+          }
+        } else {
+          positionsRef.current.set(node.id, toPos);
         }
-      } else {
-        positionsRef.current = webPositions;
       }
     }
   };
 
-  function SceneUpdater() {
+  const SceneUpdater = () => {
     useFrame((_, delta) => {
       updatePositions(delta);
     });
     return null;
-  }
+  };
 
   return (
     <div
-      style={{
-        width: '100vw',
-        height: '100vh',
-        position: 'relative',
-        backgroundColor: '#030712',
-        overflow: 'hidden',
-      }}
+      style={{ width: '100vw', height: '100vh', position: 'relative' }}
       onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
     >
       <Canvas
-        camera={{ position: [0, 160, 800], fov: 50, near: 0.1, far: 10000 }}
+        camera={{ position: [0, 220, 950], fov: 50, near: 0.1, far: 10000 }}
         onPointerMissed={() => {
           onSelectNode(null);
           if (onClearIsolation) onClearIsolation();
         }}
       >
-        {/* Parallax Cosmic Background & Atmosphere */}
         <fogExp2 attach="fog" args={['#030712', 0.00032]} />
-        <ambientLight intensity={0.5} />
+        <ambientLight intensity={0.55} />
         <directionalLight position={[200, 400, 300]} intensity={0.75} />
         <pointLight position={[0, 0, 0]} intensity={1.4} distance={2500} decay={1.5} />
 
-        {/* Deep parallax starfield layer */}
+        {/* Deep starfield layers */}
         <Stars
           radius={2000}
           depth={300}
@@ -1092,7 +1223,6 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           fade
           speed={0.3}
         />
-        {/* Closer brighter starfield layer */}
         <Stars
           radius={900}
           depth={150}
@@ -1122,7 +1252,7 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           positionsRef={positionsRef}
         />
 
-        {/* Instanced Celestial Spheres (Stars, Planets, Moons, Category Anchors) */}
+        {/* Planets, Moons, Category Anchors, Persona Spheres */}
         <NodesLayer
           nodes={nodes}
           positionsRef={positionsRef}
@@ -1134,7 +1264,7 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           dimmedNodeIds={dimmedNodeIds}
         />
 
-        {/* Tool Hubs: Distinct technical station toruses */}
+        {/* Tool Hubs: Rotating technical toruses */}
         <ToolHubsLayer
           tools={toolNodes}
           positionsRef={positionsRef}
@@ -1145,20 +1275,22 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           dimmedNodeIds={dimmedNodeIds}
         />
 
-        {/* Skill Nebula: Soft glowing particle cloud per category */}
+        {/* Skill Nebula: Volumetric glowing dust clouds */}
         <SkillNebulaLayer
           skills={skillNodes}
           positionsRef={positionsRef}
         />
 
-        {/* Star Pulsing Emissive Core & Corona Halo with Color Temperature */}
+        {/* Stars Layer: Self-luminous cores with color temperature & corona halos */}
         <StarGlowLayer
           nodes={nodes}
           positionsRef={positionsRef}
           isStarGlowVisible={isStarGlowVisible}
+          onSelectNode={onSelectNode}
+          onHoverNode={onHoverNode}
         />
 
-        {/* Dynamic Orbit Rings */}
+        {/* Orbit Rings: Concentric planetary paths */}
         <OrbitRingsLayer
           nodes={nodes}
           hybridLayout={hybridLayout}
@@ -1169,7 +1301,18 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           selectedNode={selectedNode}
         />
 
-        {/* Collision-Avoidance Screen Labels */}
+        {/* Links Layer: Real-time animated arcs pinned to planets */}
+        <EdgesLayer
+          edges={edges}
+          nodes={nodes}
+          positionsRef={positionsRef}
+          hoveredNode={hoveredNode}
+          selectedNode={selectedNode}
+          currentMode={currentMode}
+          linksMode={linksMode}
+        />
+
+        {/* Labels Layer: Human-readable project basenames, 12px min, collision avoided */}
         <LabelsLayer
           nodes={nodes}
           positionsRef={positionsRef}
@@ -1178,71 +1321,19 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           hybridLayout={hybridLayout}
         />
 
-        {/* Clean Curved Cross-System Bridge Arcs */}
-        <EdgesLayer
-          edges={edges}
-          nodes={nodes}
-          positionsRef={positionsRef}
-          hoveredNode={hoveredNode}
-          selectedNode={selectedNode}
-          currentMode={currentMode}
-        />
+        {cameraControlMode === 'orbit' && (
+          <OrbitControls
+            enableDamping
+            dampingFactor={0.06}
+            rotateSpeed={0.55}
+            zoomSpeed={0.8}
+            minDistance={20}
+            maxDistance={3500}
+          />
+        )}
 
-        {/* Post-Processing Effects Composer (Bloom & Vignette) */}
         <PostProcessingManager quality={quality} onFrameStats={onFrameStats} />
-
-        <OrbitControls
-          enabled={cameraControlMode === 'orbit'}
-          enableDamping
-          dampingFactor={0.05}
-          rotateSpeed={0.8}
-          zoomSpeed={1.2}
-          minDistance={10}
-          maxDistance={6000}
-        />
       </Canvas>
-
-      {/* Floating Hover Tooltip */}
-      {hoveredNode && (
-        <div
-          style={{
-            position: 'absolute',
-            left: mousePos.x + 12,
-            top: mousePos.y + 12,
-            backgroundColor: 'rgba(15, 23, 42, 0.95)',
-            backdropFilter: 'blur(10px)',
-            border: '1px solid rgba(148, 163, 184, 0.25)',
-            borderRadius: '8px',
-            padding: '8px 12px',
-            color: '#f8fafc',
-            pointerEvents: 'none',
-            zIndex: 60,
-            maxWidth: 260,
-            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                backgroundColor: getNodeColor(hoveredNode),
-              }}
-            />
-            <span style={{ fontSize: '10px', textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600 }}>
-              {hoveredNode.kind}
-              {hoveredNode.subkind ? ` · ${hoveredNode.subkind}` : ''}
-            </span>
-          </div>
-          <div style={{ fontSize: '13px', fontWeight: 600, marginTop: 2 }}>{hoveredNode.title}</div>
-          {hoveredNode.degree > 0 && (
-            <div style={{ fontSize: '10px', color: '#38bdf8', marginTop: 4 }}>
-              {hoveredNode.degree} connections
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 };
