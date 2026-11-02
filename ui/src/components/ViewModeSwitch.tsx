@@ -67,38 +67,27 @@ export const ViewModeSwitch: React.FC<ViewModeSwitchProps> = ({
         <span>Web (3D Force)</span>
       </button>
 
-      {/* Timeline Mode (Disabled Stub) */}
+      {/* Timeline Mode */}
       <button
-        disabled
-        title="Chronological timeline layout (coming soon)"
+        onClick={() => onChangeMode('timeline')}
+        title="Chronological 3D cylindrical timeline"
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          backgroundColor: 'transparent',
-          color: '#64748b',
+          backgroundColor: currentMode === 'timeline' ? '#06b6d4' : 'transparent',
+          color: currentMode === 'timeline' ? '#ffffff' : '#94a3b8',
           border: 'none',
           borderRadius: '6px',
           padding: '6px 12px',
           fontSize: '12px',
-          fontWeight: 500,
-          cursor: 'not-allowed',
-          opacity: 0.6,
+          fontWeight: 600,
+          cursor: 'pointer',
+          transition: 'all 0.15s ease',
         }}
       >
         <Clock size={14} />
         <span>Timeline</span>
-        <span
-          style={{
-            fontSize: '9px',
-            backgroundColor: '#475569',
-            color: '#cbd5e1',
-            padding: '1px 4px',
-            borderRadius: '4px',
-          }}
-        >
-          coming soon
-        </span>
       </button>
     </div>
   );
