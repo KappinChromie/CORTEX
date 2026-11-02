@@ -6,6 +6,7 @@ import type {
   NodeKind,
   ViewMode,
   DataSource,
+  LinksMode,
 } from './types';
 import { WebLayoutEngine } from './layouts/webLayout';
 import { GraphCanvas3D } from './components/GraphCanvas3D';
@@ -32,6 +33,7 @@ export const App: React.FC = () => {
   const [currentMode, setCurrentMode] = useState<ViewMode>('hybrid');
   const [isHealthOpen, setIsHealthOpen] = useState(false);
   const [quality, setQuality] = useState<QualityLevel>('medium');
+  const [linksMode, setLinksMode] = useState<LinksMode>('strong');
   const [fpsStats, setFpsStats] = useState<{ fps: number; frameTimeMs: number }>({
     fps: 60,
     frameTimeMs: 16.6,
@@ -145,37 +147,96 @@ export const App: React.FC = () => {
     loadSnapshot();
   }, [loadSnapshot]);
 
-  // Support optional URL search params for programmatic visual QA and deep linking
+  // Support optional URL search params & programmatic QA API for deep linking
   useEffect(() => {
     if (!data?.snapshot.nodes) return;
-    const params = new URLSearchParams(window.location.search);
-    const modeParam = params.get('mode');
-    if (modeParam === 'web' || modeParam === 'hybrid') {
-      setCurrentMode(modeParam);
-    }
-    const qualityParam = params.get('quality');
-    if (qualityParam === 'low' || qualityParam === 'medium' || qualityParam === 'high') {
-      setQuality(qualityParam);
-    }
-    const selectParam = params.get('select');
-    if (selectParam) {
-      const target = data.snapshot.nodes.find(
-        (n) => n.id === selectParam || n.title.toLowerCase() === selectParam.toLowerCase()
+
+    const findTargetNode = (idOrTitle: string): Node | undefined => {
+      const lower = idOrTitle.toLowerCase();
+      // 1. Exact ID or Title match
+      const exact = data.snapshot.nodes.find(
+        (n) => n.id === idOrTitle || n.title.toLowerCase() === lower
       );
-      if (target) {
-        setSelectedNode(target);
-      }
-    }
-    const hoverParam = params.get('hover');
-    if (hoverParam) {
-      const target = data.snapshot.nodes.find(
-        (n) => n.id === hoverParam || n.title.toLowerCase() === hoverParam.toLowerCase()
+      if (exact) return exact;
+
+      // 2. Exact match on project basename or path
+      const projMatch = data.snapshot.nodes.find(
+        (n) =>
+          n.kind === 'project' &&
+          (n.title.toLowerCase().includes(lower) || (n.path && n.path.toLowerCase().includes(lower)))
       );
-      if (target) {
-        setHoveredNode(target);
+      if (projMatch) return projMatch;
+
+      // 3. Fallback contains match
+      return data.snapshot.nodes.find(
+        (n) => n.id.toLowerCase().includes(lower) || n.title.toLowerCase().includes(lower)
+      );
+    };
+
+    const handleUrlOrPopstate = () => {
+      const params = new URLSearchParams(window.location.search);
+      const modeParam = params.get('mode');
+      if (modeParam === 'web' || modeParam === 'hybrid') {
+        setCurrentMode(modeParam);
       }
-    }
-  }, [data]);
+      const qualityParam = params.get('quality');
+      if (qualityParam === 'low' || qualityParam === 'medium' || qualityParam === 'high') {
+        setQuality(qualityParam);
+      }
+      const linksParam = params.get('links');
+      if (linksParam === 'off' || linksParam === 'strong' || linksParam === 'all') {
+        setLinksMode(linksParam);
+      }
+      const selectParam = params.get('select');
+      if (selectParam !== null) {
+        if (!selectParam || selectParam === 'null') {
+          setSelectedNode(null);
+        } else {
+          const target = findTargetNode(selectParam);
+          if (target) setSelectedNode(target);
+        }
+      }
+      const hoverParam = params.get('hover');
+      if (hoverParam !== null) {
+        if (!hoverParam || hoverParam === 'null') {
+          setHoveredNode(null);
+        } else {
+          const target = findTargetNode(hoverParam);
+          if (target) setHoveredNode(target);
+        }
+      }
+    };
+
+    handleUrlOrPopstate();
+    window.addEventListener('popstate', handleUrlOrPopstate);
+
+    (window as any).__cortexTestApi = {
+      setLinksMode,
+      setSelectedNode: (idOrTitle: string | null) => {
+        if (!idOrTitle) {
+          setSelectedNode(null);
+          return;
+        }
+        const target = findTargetNode(idOrTitle);
+        if (target) setSelectedNode(target);
+      },
+      setHoveredNode: (idOrTitle: string | null) => {
+        if (!idOrTitle) {
+          setHoveredNode(null);
+          return;
+        }
+        const target = findTargetNode(idOrTitle);
+        if (target) setHoveredNode(target);
+      },
+      resetView: handleResetView,
+      frameAll: handleFrameAll,
+    };
+
+    return () => {
+      window.removeEventListener('popstate', handleUrlOrPopstate);
+      delete (window as any).__cortexTestApi;
+    };
+  }, [data, handleFrameAll, handleResetView]);
 
   // Lookup map of nodes by ID for fast neighbor resolution
   const nodesById = useMemo(() => {
@@ -356,6 +417,8 @@ export const App: React.FC = () => {
         fpsStats={fpsStats}
         onFrameAll={handleFrameAll}
         onResetView={handleResetView}
+        linksMode={linksMode}
+        onChangeLinksMode={setLinksMode}
       />
 
       {/* Top Sub-Bar: Kind Filter Chips & Isolation HUD */}
@@ -392,6 +455,7 @@ export const App: React.FC = () => {
           isOrbitAnimating={isOrbitAnimating}
           isOrbitRingsVisible={isOrbitRingsVisible}
           isStarGlowVisible={isStarGlowVisible}
+          linksMode={linksMode}
           quality={quality}
           onFrameStats={(fps, frameTimeMs) => setFpsStats({ fps, frameTimeMs })}
           onDoubleClickNode={(node, shiftKey) => {
