@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "crates/cortex-model",
+    "crates/cortex-adapters",
+    "crates/cortex-store",
+    "crates/cortex-graph",
+    "crates/cortex-cli",
+    "src-tauri",
+]
+resolver = "2"

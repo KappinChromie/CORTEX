@@ -1,0 +1,17 @@
+[package]
+name = "cortex-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cortex-cli"
+path = "src/main.rs"
+
+[dependencies]
+cortex-model = { path = "../cortex-model" }
+cortex-adapters = { path = "../cortex-adapters" }
+cortex-store = { path = "../cortex-store" }
+cortex-graph = { path = "../cortex-graph" }
+serde_json = "1.0"
+chrono = { version = "0.4" }
+dirs = "5.0"

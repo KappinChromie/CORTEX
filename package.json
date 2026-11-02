@@ -1,0 +1,12 @@
+{
+  "name": "cortex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cortex — Agent Brain Observatory",
+  "scripts": {
+    "dev": "npm --prefix ui run dev",
+    "build": "npm --prefix ui run build",
+    "tauri": "npm --prefix ui run tauri --",
+    "tauri:dev": "npx --prefix ui tauri dev"
+  }
+}

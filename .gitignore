@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target
+Cargo.lock
+
+# Node / UI build artifacts
+/ui/node_modules
+/ui/dist
+/ui/.vite
+
+# OS files
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store
+
+# IDE and temporary files
+.vscode/
+.idea/
+*.log
+*.tmp
