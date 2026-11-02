@@ -23,7 +23,29 @@ export const ViewModeSwitch: React.FC<ViewModeSwitchProps> = ({
         gap: '4px',
       }}
     >
-      {/* Web Mode (Active) */}
+      {/* Hybrid Mode (Default Mode) */}
+      <button
+        onClick={() => onChangeMode('hybrid')}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          backgroundColor: currentMode === 'hybrid' ? '#8b5cf6' : 'transparent',
+          color: currentMode === 'hybrid' ? '#ffffff' : '#94a3b8',
+          border: 'none',
+          borderRadius: '6px',
+          padding: '6px 12px',
+          fontSize: '12px',
+          fontWeight: 600,
+          cursor: 'pointer',
+          transition: 'all 0.15s ease',
+        }}
+      >
+        <Orbit size={14} />
+        <span>Hybrid (Solar System)</span>
+      </button>
+
+      {/* Web Mode (Selectable) */}
       <button
         onClick={() => onChangeMode('web')}
         style={{
@@ -45,44 +67,10 @@ export const ViewModeSwitch: React.FC<ViewModeSwitchProps> = ({
         <span>Web (3D Force)</span>
       </button>
 
-      {/* Hybrid Mode (Disabled Stub) */}
-      <button
-        disabled
-        title="Solar-system orbit hybrid layout (Next Milestone)"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          backgroundColor: 'transparent',
-          color: '#64748b',
-          border: 'none',
-          borderRadius: '6px',
-          padding: '6px 12px',
-          fontSize: '12px',
-          fontWeight: 500,
-          cursor: 'not-allowed',
-          opacity: 0.6,
-        }}
-      >
-        <Orbit size={14} />
-        <span>Hybrid (Solar System)</span>
-        <span
-          style={{
-            fontSize: '9px',
-            backgroundColor: '#475569',
-            color: '#cbd5e1',
-            padding: '1px 4px',
-            borderRadius: '4px',
-          }}
-        >
-          M2
-        </span>
-      </button>
-
       {/* Timeline Mode (Disabled Stub) */}
       <button
         disabled
-        title="Chronological timeline layout (Next Milestone)"
+        title="Chronological timeline layout (coming soon)"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -109,7 +97,7 @@ export const ViewModeSwitch: React.FC<ViewModeSwitchProps> = ({
             borderRadius: '4px',
           }}
         >
-          M2
+          coming soon
         </span>
       </button>
     </div>

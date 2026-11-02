@@ -24,8 +24,13 @@ export const App: React.FC = () => {
 
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [hoveredNode, setHoveredNode] = useState<Node | null>(null);
-  const [currentMode, setCurrentMode] = useState<ViewMode>('web');
+  const [currentMode, setCurrentMode] = useState<ViewMode>('hybrid');
   const [isHealthOpen, setIsHealthOpen] = useState(false);
+
+  // Section B rendering controls
+  const [isOrbitAnimating, setIsOrbitAnimating] = useState<boolean>(true);
+  const [isOrbitRingsVisible, setIsOrbitRingsVisible] = useState<boolean>(true);
+  const [isStarGlowVisible, setIsStarGlowVisible] = useState<boolean>(true);
 
   // Load snapshot from Tauri backend, static public json, or fallback
   const loadSnapshot = useCallback(async () => {
@@ -172,13 +177,105 @@ export const App: React.FC = () => {
         <GraphCanvas3D
           nodes={data.snapshot.nodes}
           edges={data.snapshot.edges}
-          positions={positions}
+          webPositions={positions}
+          hybridLayout={data.hybrid_layout || {}}
+          currentMode={currentMode}
           selectedNode={selectedNode}
           onSelectNode={setSelectedNode}
           hoveredNode={hoveredNode}
           onHoverNode={setHoveredNode}
           frameAllTrigger={frameAllTrigger}
+          isOrbitAnimating={isOrbitAnimating}
+          isOrbitRingsVisible={isOrbitRingsVisible}
+          isStarGlowVisible={isStarGlowVisible}
         />
+      )}
+
+      {/* Solar System Visual Controls HUD (Bottom Left) */}
+      {currentMode === 'hybrid' && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 20,
+            left: 20,
+            zIndex: 40,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            backgroundColor: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(12px)',
+            border: '1px solid rgba(148, 163, 184, 0.2)',
+            borderRadius: '10px',
+            padding: '6px 10px',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+          }}
+        >
+          {/* Orbital Animation Play/Pause */}
+          <button
+            onClick={() => setIsOrbitAnimating((prev) => !prev)}
+            title={isOrbitAnimating ? 'Pause planetary orbits' : 'Resume planetary orbits'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '4px 8px',
+              backgroundColor: isOrbitAnimating ? 'rgba(139, 92, 246, 0.25)' : 'rgba(51, 65, 85, 0.5)',
+              border: `1px solid ${isOrbitAnimating ? '#8b5cf6' : 'rgba(148, 163, 184, 0.2)'}`,
+              borderRadius: '6px',
+              color: isOrbitAnimating ? '#c084fc' : '#94a3b8',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            <span>{isOrbitAnimating ? '⏸ Orbits Active' : '▶ Orbits Paused'}</span>
+          </button>
+
+          {/* Orbit Rings Toggle */}
+          <button
+            onClick={() => setIsOrbitRingsVisible((prev) => !prev)}
+            title="Toggle visible orbit rings"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '4px 8px',
+              backgroundColor: isOrbitRingsVisible ? 'rgba(99, 102, 241, 0.25)' : 'rgba(51, 65, 85, 0.5)',
+              border: `1px solid ${isOrbitRingsVisible ? '#6366f1' : 'rgba(148, 163, 184, 0.2)'}`,
+              borderRadius: '6px',
+              color: isOrbitRingsVisible ? '#818cf8' : '#94a3b8',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            <span>{isOrbitRingsVisible ? '◎ Orbit Rings' : '○ Rings Hidden'}</span>
+          </button>
+
+          {/* Star Glow Toggle */}
+          <button
+            onClick={() => setIsStarGlowVisible((prev) => !prev)}
+            title="Toggle stellar glow aura"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '4px 8px',
+              backgroundColor: isStarGlowVisible ? 'rgba(234, 179, 8, 0.2)' : 'rgba(51, 65, 85, 0.5)',
+              border: `1px solid ${isStarGlowVisible ? '#eab308' : 'rgba(148, 163, 184, 0.2)'}`,
+              borderRadius: '6px',
+              color: isStarGlowVisible ? '#facc15' : '#94a3b8',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            <span>{isStarGlowVisible ? '✦ Star Glow' : '✧ Glow Off'}</span>
+          </button>
+        </div>
       )}
 
       {/* Side Inspector Panel */}
@@ -454,5 +551,47 @@ function createFallbackMock(): EnrichedGraphSnapshot {
       'skill:hermes-skills': ['session:hermes-main'],
     },
     positions: {},
+    hybrid_layout: {
+      'project:cortex': {
+        role: 'star',
+        base_position: [0, 0, 0],
+      },
+      'conversation:antigravity-1': {
+        role: 'planet',
+        base_position: [0, 0, 0],
+        orbit: {
+          parent_id: 'project:cortex',
+          radius: 65,
+          inclination: 0.1,
+          ascending_node: 0.5,
+          phase: 0.0,
+          angular_speed: 0.22,
+        },
+      },
+      'session:hermes-main': {
+        role: 'planet',
+        base_position: [0, 0, 0],
+        orbit: {
+          parent_id: 'project:cortex',
+          radius: 110,
+          inclination: -0.15,
+          ascending_node: 1.2,
+          phase: 2.1,
+          angular_speed: -0.16,
+        },
+      },
+      'tool:read_file': {
+        role: 'tool_hub',
+        base_position: [40, 15, -30],
+      },
+      'skill:antigravity-guide': {
+        role: 'nebula_item',
+        base_position: [500, 100, 200],
+      },
+      'skill:hermes-skills': {
+        role: 'nebula_item',
+        base_position: [520, 80, 240],
+      },
+    },
   };
 }

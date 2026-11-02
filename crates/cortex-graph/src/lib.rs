@@ -1,8 +1,10 @@
-use cortex_model::{Edge, GraphSnapshot, Node, NodeId};
+use cortex_model::{Edge, GraphSnapshot, HybridNodeLayout, Node, NodeId};
 use petgraph::graph::{NodeIndex, UnGraph};
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+pub mod hybrid_layout;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodePosition3D {
@@ -17,6 +19,7 @@ pub struct EnrichedGraphSnapshot {
     pub snapshot: GraphSnapshot,
     pub neighbors: HashMap<NodeId, Vec<NodeId>>,
     pub positions: HashMap<NodeId, [f32; 3]>,
+    pub hybrid_layout: BTreeMap<NodeId, HybridNodeLayout>,
 }
 
 /// Builds petgraph graph, computes node degrees, extracts neighbor adjacency,
@@ -66,10 +69,14 @@ pub fn process_graph(mut snapshot: GraphSnapshot) -> EnrichedGraphSnapshot {
     // 2. Compute 3D Positions for "web" force layout
     let positions = compute_3d_positions(&snapshot.nodes, &snapshot.edges, &neighbors);
 
+    // 3. Compute Deterministic 3D Hybrid (Solar-System) Layout
+    let hybrid_layout = hybrid_layout::compute_hybrid_layout(&snapshot, &neighbors);
+
     EnrichedGraphSnapshot {
         snapshot,
         neighbors,
         positions,
+        hybrid_layout,
     }
 }
 

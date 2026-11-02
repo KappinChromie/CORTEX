@@ -233,3 +233,33 @@ pub struct ScanStats {
     pub sources_count: usize,
     pub duration_ms: u64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OrbitParameters {
+    pub parent_id: Option<NodeId>,
+    pub radius: f32,
+    pub inclination: f32,
+    pub ascending_node: f32,
+    pub phase: f32,
+    pub angular_speed: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemRole {
+    Star,
+    Planet,
+    Moon,
+    ToolHub,
+    NebulaAnchor,
+    NebulaItem,
+    Unaffiliated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HybridNodeLayout {
+    pub role: SystemRole,
+    pub base_position: [f32; 3],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orbit: Option<OrbitParameters>,
+}

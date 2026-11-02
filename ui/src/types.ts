@@ -97,10 +97,35 @@ export interface GraphSnapshot {
   shared_projects: string[];
 }
 
+export type SystemRole =
+  | 'star'
+  | 'planet'
+  | 'moon'
+  | 'tool_hub'
+  | 'nebula_anchor'
+  | 'nebula_item'
+  | 'unaffiliated';
+
+export interface OrbitParameters {
+  parent_id?: string;
+  radius: number;
+  inclination: number;
+  ascending_node: number;
+  phase: number;
+  angular_speed: number;
+}
+
+export interface HybridNodeLayout {
+  role: SystemRole;
+  base_position: [number, number, number];
+  orbit?: OrbitParameters;
+}
+
 export interface EnrichedGraphSnapshot {
   snapshot: GraphSnapshot;
   neighbors: Record<string, string[]>;
   positions: Record<string, [number, number, number]>;
+  hybrid_layout: Record<string, HybridNodeLayout>;
 }
 
 export type ViewMode = 'web' | 'hybrid' | 'timeline';
