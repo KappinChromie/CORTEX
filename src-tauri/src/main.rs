@@ -49,11 +49,20 @@ fn rescan(state: State<'_, AppState>) -> Result<EnrichedGraphSnapshot, String> {
 }
 
 fn main() {
+    #[cfg(windows)]
+    {
+        if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {
+            std::env::set_var(
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "--remote-debugging-port=9222",
+            );
+        }
+    }
+
     let store_path = CortexStore::default_path();
     let store = CortexStore::new(store_path).expect("Failed to initialize CortexStore");
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             store: Mutex::new(store),
         })

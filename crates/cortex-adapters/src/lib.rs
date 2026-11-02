@@ -5,8 +5,9 @@ pub mod path_norm;
 pub mod redaction;
 pub mod sqlite_helpers;
 
+use chrono::{DateTime, Utc};
 use cortex_model::{
-    AdapterHealth, Edge, Event, GraphSnapshot, Node, NodeKind, TimestampStats,
+    AdapterHealth, Edge, EdgeKind, Event, GraphSnapshot, Node, NodeKind, TimestampStats,
 };
 use std::collections::HashMap;
 
@@ -84,6 +85,71 @@ pub fn scan_all_sources(
                 // Exclude generic roots from shared star count
                 if !node.is_generic_root {
                     shared_projects.push(node.title.clone());
+                }
+            }
+        }
+    }
+
+    // 4b. Derive Project Timestamps from Child Conversations and Sessions
+    let mut project_times: HashMap<
+        String,
+        (
+            Option<DateTime<Utc>>,
+            Option<DateTime<Utc>>,
+            Option<DateTime<Utc>>,
+        ),
+    > = HashMap::new();
+
+    for edge in &all_edges {
+        if edge.kind == EdgeKind::ProjectSession || edge.kind == EdgeKind::ProjectTask {
+            let (child_id, proj_id) = if edge.to.starts_with("project:") {
+                (&edge.from, &edge.to)
+            } else if edge.from.starts_with("project:") {
+                (&edge.to, &edge.from)
+            } else {
+                continue;
+            };
+
+            if let Some(child_node) = all_nodes.get(child_id) {
+                let entry = project_times
+                    .entry(proj_id.clone())
+                    .or_insert((None, None, None));
+
+                // Child created_at
+                let c_time = child_node.created_at.or(child_node.last_active_at);
+                if let Some(ct) = c_time {
+                    if entry.0.is_none() || Some(ct) < entry.0 {
+                        entry.0 = Some(ct);
+                    }
+                }
+
+                // Child last_active_at
+                let a_time = child_node.last_active_at.or(child_node.created_at);
+                if let Some(at) = a_time {
+                    if entry.1.is_none() || Some(at) > entry.1 {
+                        entry.1 = Some(at);
+                    }
+                }
+
+                // Child modified_at
+                let m_time = child_node.modified_at.or(a_time);
+                if let Some(mt) = m_time {
+                    if entry.2.is_none() || Some(mt) > entry.2 {
+                        entry.2 = Some(mt);
+                    }
+                }
+            }
+        }
+    }
+
+    for (proj_id, (min_created, max_active, max_mod)) in project_times {
+        if let Some(node) = all_nodes.get_mut(&proj_id) {
+            if node.kind == NodeKind::Project {
+                if min_created.is_some() || max_active.is_some() {
+                    node.created_at = min_created;
+                    node.last_active_at = max_active.or(min_created);
+                    node.modified_at = max_mod.or(node.last_active_at);
+                    node.timestamp_source = Some("derived_children".into());
                 }
             }
         }
@@ -257,5 +323,25 @@ mod tests {
         let cap: serde_json::Value = serde_json::from_str(&cap_str).expect("Valid JSON");
         let windows = cap["windows"].as_array().expect("windows array");
         assert_eq!(windows, &vec![serde_json::Value::String("main".into())], "Capabilities must be tightened to main window only (no wildcard)");
+    }
+
+    #[test]
+    fn test_project_derived_timestamps_from_children() {
+        let snapshot = scan_all_sources(None, None, vec![]);
+        for node in &snapshot.nodes {
+            if node.kind == NodeKind::Project && !node.is_generic_root {
+                // If the project has child sessions/conversations, its timestamp_source should be derived_children
+                if node.created_at.is_some() {
+                    assert_eq!(
+                        node.timestamp_source.as_deref(),
+                        Some("derived_children"),
+                        "Project {} with timestamps must have timestamp_source derived_children",
+                        node.id
+                    );
+                    assert!(node.last_active_at.is_some(), "Project must have last_active_at if created_at is present");
+                    assert!(node.created_at <= node.last_active_at, "created_at must be <= last_active_at");
+                }
+            }
+        }
     }
 }

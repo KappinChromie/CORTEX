@@ -22,6 +22,7 @@ import {
   type LinksMode,
 } from '../utils/renderRules';
 import { PostProcessingManager, type QualityLevel } from './PostProcessingManager';
+import { PerformanceCollector, type PerformanceStats } from './PerformanceOverlay';
 
 interface GraphCanvas3DProps {
   nodes: Node[];
@@ -42,6 +43,8 @@ interface GraphCanvas3DProps {
   linksMode?: LinksMode;
   quality: QualityLevel;
   onFrameStats?: (fps: number, frameTimeMs: number) => void;
+  onPerformanceStats?: (stats: PerformanceStats) => void;
+  totalNodesCount?: number;
   onDoubleClickNode?: (node: Node, shiftKey: boolean) => void;
   dimmedNodeIds?: Set<string>;
   onClearIsolation?: () => void;
@@ -1136,6 +1139,8 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
   linksMode = 'strong',
   quality,
   onFrameStats,
+  onPerformanceStats,
+  totalNodesCount,
   onDoubleClickNode,
   dimmedNodeIds,
   onClearIsolation,
@@ -1364,6 +1369,12 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
         )}
 
         <PostProcessingManager quality={quality} onFrameStats={onFrameStats} />
+        <PerformanceCollector
+          onStats={onPerformanceStats || (() => {})}
+          visibleNodesCount={nodes.length}
+          totalNodesCount={totalNodesCount || nodes.length}
+          quality={quality}
+        />
       </Canvas>
     </div>
   );

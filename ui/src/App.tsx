@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type {
   EnrichedGraphSnapshot,
@@ -14,6 +14,8 @@ import { HeaderBar } from './components/HeaderBar';
 import { FilterBar } from './components/FilterBar';
 import { SidePanel } from './components/SidePanel';
 import { SourceHealthPanel } from './components/SourceHealthPanel';
+import { PerformanceOverlay, type PerformanceStats } from './components/PerformanceOverlay';
+import { generateSynthetic10kSnapshot } from './utils/syntheticData';
 import type { QualityLevel } from './components/PostProcessingManager';
 import { Loader2, AlertCircle } from 'lucide-react';
 
@@ -38,6 +40,12 @@ export const App: React.FC = () => {
     fps: 60,
     frameTimeMs: 16.6,
   });
+
+  // Section 0.4 In-App Performance Overlay & Synthetic 10k Graph
+  const [isPerfOpen, setIsPerfOpen] = useState<boolean>(false);
+  const [perfStats, setPerfStats] = useState<PerformanceStats | null>(null);
+  const [isSynthetic, setIsSynthetic] = useState<boolean>(false);
+  const realDataRef = useRef<EnrichedGraphSnapshot | null>(null);
 
   // Section B rendering controls
   const [isOrbitAnimating, setIsOrbitAnimating] = useState<boolean>(true);
@@ -76,6 +84,7 @@ export const App: React.FC = () => {
       setError(null);
       // 1. Attempt native Tauri IPC call
       const res = await invoke<EnrichedGraphSnapshot>('get_graph_snapshot');
+      realDataRef.current = res;
       setData(res);
       setDataSource('LIVE');
     } catch (ipcErr) {
@@ -85,6 +94,7 @@ export const App: React.FC = () => {
         const resp = await fetch('/snapshot.json');
         if (resp.ok) {
           const json = await resp.json();
+          realDataRef.current = json;
           setData(json);
           setDataSource('SNAPSHOT');
           return;
@@ -93,10 +103,21 @@ export const App: React.FC = () => {
         console.warn('Fetch /snapshot.json failed:', fetchErr);
       }
       // 3. Fall back to synthetic mock data
-      setData(createFallbackMock());
+      const mock = createFallbackMock();
+      realDataRef.current = mock;
+      setData(mock);
       setDataSource('DEMO');
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const toggleSynthetic = useCallback((synthetic: boolean) => {
+    setIsSynthetic(synthetic);
+    if (synthetic) {
+      setData(generateSynthetic10kSnapshot());
+    } else if (realDataRef.current) {
+      setData(realDataRef.current);
     }
   }, []);
 
@@ -120,6 +141,8 @@ export const App: React.FC = () => {
         setSelectedNode(null);
       } else if (e.key === 'c' || e.key === 'C') {
         setCameraControlMode((prev) => (prev === 'orbit' ? 'fly' : 'orbit'));
+      } else if (e.key === '`' || e.key === '~') {
+        setIsPerfOpen((prev) => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -230,6 +253,10 @@ export const App: React.FC = () => {
       },
       resetView: handleResetView,
       frameAll: handleFrameAll,
+      togglePerfOverlay: (open?: boolean) =>
+        setIsPerfOpen((prev) => (open !== undefined ? open : !prev)),
+      toggleSynthetic,
+      setQuality: (q: QualityLevel) => setQuality(q),
     };
 
     return () => {
@@ -458,6 +485,8 @@ export const App: React.FC = () => {
           linksMode={linksMode}
           quality={quality}
           onFrameStats={(fps, frameTimeMs) => setFpsStats({ fps, frameTimeMs })}
+          onPerformanceStats={setPerfStats}
+          totalNodesCount={data?.snapshot.nodes.length || 0}
           onDoubleClickNode={(node, shiftKey) => {
             setIsolatedState({
               centerNodeId: node.id,
@@ -710,6 +739,17 @@ export const App: React.FC = () => {
           </button>
         </div>
       )}
+
+      {/* In-App Performance Overlay (` key) */}
+      <PerformanceOverlay
+        stats={perfStats}
+        isOpen={isPerfOpen}
+        onClose={() => setIsPerfOpen(false)}
+        quality={quality}
+        onSetQuality={setQuality}
+        isSynthetic={isSynthetic}
+        onToggleSynthetic={toggleSynthetic}
+      />
     </div>
   );
 };
