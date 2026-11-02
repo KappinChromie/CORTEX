@@ -265,3 +265,22 @@ pub struct HybridNodeLayout {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orbit: Option<OrbitParameters>,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GraphDelta {
+    pub added_nodes: Vec<Node>,
+    pub updated_nodes: Vec<Node>,
+    pub removed_node_ids: Vec<NodeId>,
+    pub added_edges: Vec<Edge>,
+    pub removed_edges: Vec<Edge>,
+    pub new_events: Vec<Event>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentPresence {
+    pub agent_id: String,
+    pub is_active: bool,
+    pub last_seen: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_activity: Option<String>,
+}

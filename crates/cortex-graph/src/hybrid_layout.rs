@@ -39,7 +39,118 @@ pub fn compute_orbital_offset(orbit: &OrbitParameters, time: f32) -> [f32; 3] {
     [x, y, z]
 }
 
-/// Evaluates live 3D positions for all nodes at simulation time `t`.
+/// Computes an incremental layout for newly added nodes without shifting existing node positions.
+pub fn compute_incremental_node_layout(
+    existing_layout: &BTreeMap<NodeId, HybridNodeLayout>,
+    new_nodes: &[cortex_model::Node],
+    new_edges: &[cortex_model::Edge],
+) -> BTreeMap<NodeId, HybridNodeLayout> {
+    let mut updated_layout = existing_layout.clone();
+
+    // Map parent relationships from new edges
+    let mut parent_map: HashMap<NodeId, NodeId> = HashMap::new();
+    for edge in new_edges {
+        match edge.kind {
+            EdgeKind::ProjectSession | EdgeKind::ProjectTask => {
+                parent_map.insert(edge.from.clone(), edge.to.clone());
+                parent_map.insert(edge.to.clone(), edge.from.clone());
+            }
+            EdgeKind::ArtifactConversation | EdgeKind::SessionMemory => {
+                parent_map.insert(edge.from.clone(), edge.to.clone());
+            }
+            _ => {}
+        }
+    }
+
+    for node in new_nodes {
+        if updated_layout.contains_key(&node.id) {
+            continue; // Keep existing position stable
+        }
+
+        let hash = deterministic_hash(&node.id);
+        let parent_id = parent_map.get(&node.id).cloned();
+
+        let node_layout = match node.kind {
+            NodeKind::Project => {
+                // New star placed on outer spiral
+                let angle = hash_to_float(hash, 2.0 * PI);
+                let radius = 600.0 + hash_to_float(hash.wrapping_add(1), 300.0);
+                let y = (hash_to_float(hash.wrapping_add(2), 60.0)) - 30.0;
+                HybridNodeLayout {
+                    role: SystemRole::Star,
+                    base_position: [radius * angle.cos(), y, radius * angle.sin()],
+                    orbit: None,
+                }
+            }
+            NodeKind::Conversation | NodeKind::Session => {
+                let role = SystemRole::Planet;
+                let orbit_radius = 45.0 + hash_to_float(hash, 65.0);
+                let inc = hash_to_float(hash.wrapping_add(3), 0.15) - 0.075;
+                let asc = hash_to_float(hash.wrapping_add(4), 2.0 * PI);
+                let phase = hash_to_float(hash.wrapping_add(5), 2.0 * PI);
+                let speed = 0.08 + hash_to_float(hash.wrapping_add(6), 0.12);
+
+                let base_pos = if let Some(ref pid) = parent_id {
+                    updated_layout
+                        .get(pid)
+                        .map(|l| l.base_position)
+                        .unwrap_or([0.0, 0.0, 0.0])
+                } else {
+                    [0.0, 0.0, 0.0]
+                };
+
+                HybridNodeLayout {
+                    role,
+                    base_position: base_pos,
+                    orbit: Some(OrbitParameters {
+                        parent_id,
+                        radius: orbit_radius,
+                        inclination: inc,
+                        ascending_node: asc,
+                        phase,
+                        angular_speed: speed,
+                    }),
+                }
+            }
+            NodeKind::Artifact | NodeKind::Task | NodeKind::Memory => {
+                let role = SystemRole::Moon;
+                let orbit_radius = 8.0 + hash_to_float(hash, 16.0);
+                let inc = hash_to_float(hash.wrapping_add(3), 0.25) - 0.125;
+                let asc = hash_to_float(hash.wrapping_add(4), 2.0 * PI);
+                let phase = hash_to_float(hash.wrapping_add(5), 2.0 * PI);
+                let speed = 0.2 + hash_to_float(hash.wrapping_add(6), 0.3);
+
+                HybridNodeLayout {
+                    role,
+                    base_position: [0.0, 0.0, 0.0],
+                    orbit: Some(OrbitParameters {
+                        parent_id,
+                        radius: orbit_radius,
+                        inclination: inc,
+                        ascending_node: asc,
+                        phase,
+                        angular_speed: speed,
+                    }),
+                }
+            }
+            _ => {
+                // Nebula or Unaffiliated
+                let angle = hash_to_float(hash, 2.0 * PI);
+                let radius = 750.0 + hash_to_float(hash.wrapping_add(1), 400.0);
+                let y = hash_to_float(hash.wrapping_add(2), 200.0) - 100.0;
+                HybridNodeLayout {
+                    role: SystemRole::Unaffiliated,
+                    base_position: [radius * angle.cos(), y, radius * angle.sin()],
+                    orbit: None,
+                }
+            }
+        };
+
+        updated_layout.insert(node.id.clone(), node_layout);
+    }
+
+    updated_layout
+}
 pub fn evaluate_hybrid_positions(
     layout: &BTreeMap<NodeId, HybridNodeLayout>,
     time: f32,
@@ -806,5 +917,127 @@ mod tests {
         println!("Synthetic 10,000-node hybrid layout computed in: {:?}", elapsed);
         assert_eq!(layout.len(), 10_000);
         assert!(elapsed.as_millis() < 500, "10k layout should compute in under 500ms");
+    }
+
+    #[test]
+    fn test_stable_layout_preserves_existing_nodes() {
+        let mut initial_nodes = Vec::new();
+        let mut initial_edges = Vec::new();
+
+        let star_id = "star:proj1".to_string();
+        initial_nodes.push(Node {
+            id: star_id.clone(),
+            source_id: "test".into(),
+            kind: NodeKind::Project,
+            title: "Project 1".into(),
+            body_preview: "".into(),
+            path: None,
+            tags: vec![],
+            created_at: None,
+            modified_at: None,
+            last_active_at: None,
+            access_count: 1,
+            pinned: false,
+            degree: 1,
+            importance: 0.5,
+            freshness: 0.5,
+            is_ambient: false,
+            is_generic_root: false,
+            timestamp_source: None,
+            subkind: None,
+            hidden_by_default: false,
+            metadata: serde_json::Value::Null,
+        });
+
+        let planet_id = "planet:conv1".to_string();
+        initial_nodes.push(Node {
+            id: planet_id.clone(),
+            source_id: "test".into(),
+            kind: NodeKind::Conversation,
+            title: "Conv 1".into(),
+            body_preview: "".into(),
+            path: None,
+            tags: vec![],
+            created_at: None,
+            modified_at: None,
+            last_active_at: None,
+            access_count: 1,
+            pinned: false,
+            degree: 1,
+            importance: 0.5,
+            freshness: 0.5,
+            is_ambient: false,
+            is_generic_root: false,
+            timestamp_source: None,
+            subkind: None,
+            hidden_by_default: false,
+            metadata: serde_json::Value::Null,
+        });
+
+        initial_edges.push(Edge {
+            from: planet_id.clone(),
+            to: star_id.clone(),
+            kind: EdgeKind::ProjectSession,
+            weight: 1.0,
+        });
+
+        let snapshot = GraphSnapshot {
+            nodes: initial_nodes,
+            edges: initial_edges,
+            events: vec![],
+            sources: vec![],
+            timestamp_stats: TimestampStats::default(),
+            shared_projects: vec![],
+        };
+
+        let initial_layout = compute_hybrid_layout(&snapshot, &HashMap::new());
+        assert_eq!(initial_layout.len(), 2);
+
+        let star_initial = initial_layout[&star_id].clone();
+        let planet_initial = initial_layout[&planet_id].clone();
+
+        // Now add a 3rd node (moon) incrementally
+        let new_moon_id = "moon:art1".to_string();
+        let new_moon = Node {
+            id: new_moon_id.clone(),
+            source_id: "test".into(),
+            kind: NodeKind::Artifact,
+            title: "Art 1".into(),
+            body_preview: "".into(),
+            path: None,
+            tags: vec![],
+            created_at: None,
+            modified_at: None,
+            last_active_at: None,
+            access_count: 1,
+            pinned: false,
+            degree: 1,
+            importance: 0.5,
+            freshness: 0.5,
+            is_ambient: false,
+            is_generic_root: false,
+            timestamp_source: None,
+            subkind: None,
+            hidden_by_default: false,
+            metadata: serde_json::Value::Null,
+        };
+
+        let new_edges = vec![Edge {
+            from: new_moon_id.clone(),
+            to: planet_id.clone(),
+            kind: EdgeKind::ArtifactConversation,
+            weight: 1.0,
+        }];
+
+        let incremental_layout =
+            compute_incremental_node_layout(&initial_layout, &[new_moon], &new_edges);
+
+        assert_eq!(incremental_layout.len(), 3);
+        // Existing star and planet layouts must be completely unchanged!
+        assert_eq!(incremental_layout[&star_id], star_initial);
+        assert_eq!(incremental_layout[&planet_id], planet_initial);
+        // Moon must be present
+        assert!(incremental_layout.contains_key(&new_moon_id));
+        assert_eq!(incremental_layout[&new_moon_id].role, SystemRole::Moon);
     }
 }

@@ -1,9 +1,11 @@
 pub mod antigravity;
 pub mod hermes;
+pub mod hermes_listener;
 pub mod markdown_vault;
 pub mod path_norm;
 pub mod redaction;
 pub mod sqlite_helpers;
+pub mod watch;
 
 use chrono::{DateTime, Utc};
 use cortex_model::{
