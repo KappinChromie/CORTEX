@@ -18,6 +18,38 @@ pub enum EdgeRenderStyle {
     CurvedArc,
 }
 
+/// Computes the 3D position for a node in cylindrical timeline mode.
+/// X is time; Y and Z form circular project lanes in the YZ plane.
+pub fn compute_timeline_lane_position(
+    time_norm: f32,
+    total_length: f32,
+    lane_idx: usize,
+    total_lanes: usize,
+    cylinder_radius: f32,
+) -> [f32; 3] {
+    let x = time_norm * (total_length / 2.0);
+    let angle = (lane_idx as f32 / total_lanes.max(1) as f32) * 2.0 * std::f32::consts::PI;
+    let y = cylinder_radius * angle.cos();
+    let z = cylinder_radius * angle.sin();
+    [x, y, z]
+}
+
+/// Evaluates node visibility and glow status during timeline replay.
+pub fn evaluate_replay_node_state(
+    node_created_ms: i64,
+    current_scrubber_ms: i64,
+    active_window_ms: i64,
+    idle_threshold_ms: i64,
+) -> (bool, bool, bool) {
+    if node_created_ms > current_scrubber_ms {
+        return (false, false, false);
+    }
+    let age_ms = current_scrubber_ms - node_created_ms;
+    let is_active_glow = age_ms <= active_window_ms;
+    let is_idle_dimmed = age_ms >= idle_threshold_ms;
+    (true, is_active_glow, is_idle_dimmed)
+}
+
 /// Verifies whether an edge's 3D endpoints are finite and within galaxy bounds sanity limits.
 pub fn is_edge_geometry_valid(
     p1: [f32; 3],
@@ -875,5 +907,79 @@ mod tests {
         assert!(ctrl[0].is_finite());
         assert!(ctrl[1].is_finite());
         assert!(ctrl[2].is_finite());
+    }
+
+    #[test]
+    fn test_timeline_lane_placement_cylindrical() {
+        let total_length = 1600.0;
+        let radius = 100.0;
+        let total_lanes = 4;
+
+        // Lane 0 at t = -1.0 (start of timeline)
+        let pos_start = compute_timeline_lane_position(-1.0, total_length, 0, total_lanes, radius);
+        assert_eq!(pos_start[0], -800.0);
+        assert!((pos_start[1] - 100.0).abs() < 1e-4);
+        assert!(pos_start[2].abs() < 1e-4);
+
+        // Lane 2 (opposite side of cylinder: angle = PI) at t = 0.0 (middle of timeline)
+        let pos_mid = compute_timeline_lane_position(0.0, total_length, 2, total_lanes, radius);
+        assert_eq!(pos_mid[0], 0.0);
+        assert!((pos_mid[1] - (-100.0)).abs() < 1e-4);
+        assert!(pos_mid[2].abs() < 1e-4);
+
+        // Lane 1 (top of cylinder: angle = PI/2) at t = 1.0 (end of timeline)
+        let pos_end = compute_timeline_lane_position(1.0, total_length, 1, total_lanes, radius);
+        assert_eq!(pos_end[0], 800.0);
+        assert!(pos_end[1].abs() < 1e-4);
+        assert!((pos_end[2] - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_replay_scrubber_time_math_and_glow() {
+        let created_ms = 1_000_000;
+        let active_window_ms = 4 * 3600 * 1000; // 4 hours
+        let idle_threshold_ms = 72 * 3600 * 1000; // 72 hours
+
+        // 1. Before node birth: must be invisible
+        let (visible, _, _) = evaluate_replay_node_state(
+            created_ms,
+            created_ms - 1000,
+            active_window_ms,
+            idle_threshold_ms,
+        );
+        assert!(!visible);
+
+        // 2. Right at birth (recent active window): must be visible and glowing
+        let (visible, glow, idle) = evaluate_replay_node_state(
+            created_ms,
+            created_ms + 1000,
+            active_window_ms,
+            idle_threshold_ms,
+        );
+        assert!(visible);
+        assert!(glow);
+        assert!(!idle);
+
+        // 3. Normal age (10 hours later): visible, no glow, not idle yet
+        let (visible, glow, idle) = evaluate_replay_node_state(
+            created_ms,
+            created_ms + 10 * 3600 * 1000,
+            active_window_ms,
+            idle_threshold_ms,
+        );
+        assert!(visible);
+        assert!(!glow);
+        assert!(!idle);
+
+        // 4. Idle age (100 hours later): visible, no glow, idle dimmed
+        let (visible, glow, idle) = evaluate_replay_node_state(
+            created_ms,
+            created_ms + 100 * 3600 * 1000,
+            active_window_ms,
+            idle_threshold_ms,
+        );
+        assert!(visible);
+        assert!(!glow);
+        assert!(idle);
     }
 }

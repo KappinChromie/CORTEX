@@ -46,7 +46,7 @@ export const LiveFeedPanel: React.FC<LiveFeedPanelProps> = ({
   };
 
   return (
-    <div className="fixed bottom-4 left-4 z-40 max-w-sm w-full font-mono text-xs select-none pointer-events-auto">
+    <div className="fixed bottom-16 left-4 z-40 max-w-sm w-full font-mono text-xs select-none pointer-events-auto">
       {/* Collapsed Trigger Bar */}
       <div
         onClick={() => setIsOpen(!isOpen)}

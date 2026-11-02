@@ -64,6 +64,7 @@ function CameraController({
   nodes,
   isFollowAgent,
   activeEvents,
+  currentMode,
 }: {
   selectedNode: Node | null;
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
@@ -72,6 +73,7 @@ function CameraController({
   nodes: Node[];
   isFollowAgent?: boolean;
   activeEvents?: Event[];
+  currentMode?: ViewMode;
 }) {
   const { camera } = useThree();
   const targetCamPos = useRef<THREE.Vector3 | null>(null);
@@ -171,6 +173,20 @@ function CameraController({
       }
     }
   }, [isFollowAgent, activeEvents, positionsRef]);
+
+  // Mode transition panoramic framing
+  const prevModeRef = useRef<ViewMode | undefined>(currentMode);
+  useEffect(() => {
+    if (currentMode && prevModeRef.current !== currentMode) {
+      if (currentMode === 'timeline') {
+        targetLookAt.current = new THREE.Vector3(0, 0, 0);
+        targetCamPos.current = new THREE.Vector3(0, 180, 1350);
+      } else if (currentMode === 'hybrid') {
+        applyBoundingSphereFraming(false);
+      }
+      prevModeRef.current = currentMode;
+    }
+  }, [currentMode, applyBoundingSphereFraming]);
 
   // Reset view & Frame all triggers
   useEffect(() => {
@@ -1457,6 +1473,7 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           nodes={nodes}
           isFollowAgent={isFollowAgent}
           activeEvents={activeEvents}
+          currentMode={currentMode}
         />
 
         <FreeFlyController enabled={cameraControlMode === 'fly'} />

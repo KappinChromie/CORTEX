@@ -190,7 +190,7 @@ where
                     }
 
                     let mut body = Vec::new();
-                    if let Err(_) = request.as_reader().read_to_end(&mut body) {
+                    if request.as_reader().read_to_end(&mut body).is_err() {
                         let resp =
                             Response::from_string("Read Error").with_status_code(400);
                         let _ = request.respond(resp);

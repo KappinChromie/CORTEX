@@ -14,6 +14,12 @@ pub struct FileTailTracker {
     offsets: HashMap<PathBuf, u64>,
 }
 
+impl Default for FileTailTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileTailTracker {
     pub fn new() -> Self {
         Self {
@@ -44,10 +50,8 @@ impl FileTailTracker {
         let reader = BufReader::new(file);
 
         let mut lines = Vec::new();
-        for line_res in reader.lines() {
-            if let Ok(line) = line_res {
-                lines.push(line);
-            }
+        for line in reader.lines().map_while(Result::ok) {
+            lines.push(line);
         }
 
         self.offsets.insert(path.to_path_buf(), current_len);
@@ -405,5 +409,49 @@ mod tests {
         state.pending_paths.insert(PathBuf::from("path1.txt")); // Duplicate coalesced
 
         assert_eq!(state.pending_paths.len(), 2);
+    }
+
+    #[test]
+    fn test_incremental_delta_correctness() {
+        let mut delta = GraphDelta::default();
+
+        let node = Node {
+            id: "node:incremental".into(),
+            source_id: "antigravity".into(),
+            kind: NodeKind::Artifact,
+            title: "New Artifact".into(),
+            body_preview: "Artifact description".into(),
+            path: None,
+            tags: vec![],
+            created_at: Some(Utc::now()),
+            modified_at: Some(Utc::now()),
+            last_active_at: Some(Utc::now()),
+            access_count: 1,
+            pinned: false,
+            degree: 1,
+            importance: 0.7,
+            freshness: 1.0,
+            is_ambient: false,
+            is_generic_root: false,
+            timestamp_source: Some("fs_watch".into()),
+            subkind: None,
+            hidden_by_default: false,
+            metadata: serde_json::json!({}),
+        };
+
+        delta.added_nodes.push(node);
+        delta.new_events.push(Event {
+            id: "ev-delta-1".into(),
+            ts: Utc::now(),
+            source_id: "antigravity".into(),
+            node_id: Some("node:incremental".into()),
+            kind: EventKind::ToolCalled,
+            detail: "Tool call: write_file".into(),
+        });
+
+        assert_eq!(delta.added_nodes.len(), 1);
+        assert_eq!(delta.added_nodes[0].id, "node:incremental");
+        assert_eq!(delta.new_events.len(), 1);
+        assert_eq!(delta.new_events[0].kind, EventKind::ToolCalled);
     }
 }

@@ -93,14 +93,14 @@ pub fn scan_all_sources(
     }
 
     // 4b. Derive Project Timestamps from Child Conversations and Sessions
-    let mut project_times: HashMap<
-        String,
-        (
-            Option<DateTime<Utc>>,
-            Option<DateTime<Utc>>,
-            Option<DateTime<Utc>>,
-        ),
-    > = HashMap::new();
+    #[derive(Default)]
+    struct DerivedProjectTimes {
+        created_at: Option<DateTime<Utc>>,
+        last_active_at: Option<DateTime<Utc>>,
+        modified_at: Option<DateTime<Utc>>,
+    }
+
+    let mut project_times: HashMap<String, DerivedProjectTimes> = HashMap::new();
 
     for edge in &all_edges {
         if edge.kind == EdgeKind::ProjectSession || edge.kind == EdgeKind::ProjectTask {
@@ -113,46 +113,44 @@ pub fn scan_all_sources(
             };
 
             if let Some(child_node) = all_nodes.get(child_id) {
-                let entry = project_times
-                    .entry(proj_id.clone())
-                    .or_insert((None, None, None));
+                let entry = project_times.entry(proj_id.clone()).or_default();
 
                 // Child created_at
                 let c_time = child_node.created_at.or(child_node.last_active_at);
                 if let Some(ct) = c_time {
-                    if entry.0.is_none() || Some(ct) < entry.0 {
-                        entry.0 = Some(ct);
+                    if entry.created_at.is_none() || Some(ct) < entry.created_at {
+                        entry.created_at = Some(ct);
                     }
                 }
 
                 // Child last_active_at
                 let a_time = child_node.last_active_at.or(child_node.created_at);
                 if let Some(at) = a_time {
-                    if entry.1.is_none() || Some(at) > entry.1 {
-                        entry.1 = Some(at);
+                    if entry.last_active_at.is_none() || Some(at) > entry.last_active_at {
+                        entry.last_active_at = Some(at);
                     }
                 }
 
                 // Child modified_at
                 let m_time = child_node.modified_at.or(a_time);
                 if let Some(mt) = m_time {
-                    if entry.2.is_none() || Some(mt) > entry.2 {
-                        entry.2 = Some(mt);
+                    if entry.modified_at.is_none() || Some(mt) > entry.modified_at {
+                        entry.modified_at = Some(mt);
                     }
                 }
             }
         }
     }
 
-    for (proj_id, (min_created, max_active, max_mod)) in project_times {
+    for (proj_id, times) in project_times {
         if let Some(node) = all_nodes.get_mut(&proj_id) {
-            if node.kind == NodeKind::Project {
-                if min_created.is_some() || max_active.is_some() {
-                    node.created_at = min_created;
-                    node.last_active_at = max_active.or(min_created);
-                    node.modified_at = max_mod.or(node.last_active_at);
-                    node.timestamp_source = Some("derived_children".into());
-                }
+            if node.kind == NodeKind::Project
+                && (times.created_at.is_some() || times.last_active_at.is_some())
+            {
+                node.created_at = times.created_at;
+                node.last_active_at = times.last_active_at.or(times.created_at);
+                node.modified_at = times.modified_at.or(node.last_active_at);
+                node.timestamp_source = Some("derived_children".into());
             }
         }
     }

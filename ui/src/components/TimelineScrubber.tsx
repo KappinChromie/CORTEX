@@ -136,18 +136,20 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({
       </div>
 
       {/* Histogram & Progress Slider Track */}
-      <div className="relative w-full h-8 flex items-end bg-slate-950/60 rounded border border-slate-800 px-1 overflow-hidden group cursor-pointer">
+      <div className="relative w-full h-10 flex items-end bg-slate-950/80 rounded-lg border border-slate-700/80 px-1 overflow-hidden group cursor-pointer shadow-inner">
         {/* Activity Histogram Bars */}
-        <div className="absolute inset-0 flex items-end px-1 gap-[2px] opacity-40 pointer-events-none">
+        <div className="absolute inset-0 flex items-end px-1 gap-[2px] opacity-85 pointer-events-none">
           {histogram.map((bucket, idx) => {
             const hPercent = (bucket.count / maxBucketCount) * 100;
             const isPassed = bucket.timestamp <= currentTime;
             return (
               <div
                 key={idx}
-                style={{ height: `${Math.max(12, hPercent)}%` }}
+                style={{ height: `${Math.max(14, hPercent)}%` }}
                 className={`flex-1 min-w-[2px] rounded-t transition-colors ${
-                  isPassed ? 'bg-cyan-400' : 'bg-slate-600'
+                  isPassed
+                    ? 'bg-gradient-to-t from-cyan-600/60 to-cyan-300 shadow-[0_0_6px_rgba(6,182,212,0.4)]'
+                    : 'bg-slate-700/60'
                 }`}
                 title={`${bucket.dateStr}: ${bucket.count} items`}
               />
@@ -157,15 +159,24 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({
 
         {/* Progress Fill Bar */}
         <div
-          className="absolute left-0 bottom-0 top-0 bg-cyan-500/15 pointer-events-none"
+          className="absolute left-0 bottom-0 top-0 bg-gradient-to-r from-cyan-500/10 to-cyan-500/25 pointer-events-none"
           style={{ width: `${progressPercent}%` }}
         />
 
-        {/* Scrubber Thumb / Needle */}
+        {/* Scrubber Thumb / Needle with Top Glow Diamond */}
         <div
-          className="absolute top-0 bottom-0 w-[2px] bg-cyan-400 shadow-[0_0_8px_#38bdf8] pointer-events-none"
+          className="absolute top-0 bottom-0 w-[2px] bg-cyan-300 shadow-[0_0_10px_#38bdf8] pointer-events-none z-10"
           style={{ left: `${progressPercent}%` }}
-        />
+        >
+          <div className="absolute -top-1 -left-[3px] w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_#38bdf8]" />
+        </div>
+
+        {/* Date Tick Marks */}
+        <div className="absolute bottom-0.5 inset-x-2 flex justify-between text-[9px] text-slate-500 pointer-events-none opacity-60">
+          <span>{new Date(minTime).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+          <span>{new Date(minTime + (maxTime - minTime) * 0.5).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+          <span>{new Date(maxTime).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+        </div>
 
         {/* Invisible Range Input for Interactive Scrubbing */}
         <input
@@ -175,7 +186,7 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({
           step={60000} // 1 minute resolution
           value={currentTime}
           onChange={(e) => onTimeChange(Number(e.target.value))}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize"
+          className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize z-20"
         />
       </div>
 
