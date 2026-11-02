@@ -775,7 +775,32 @@ impl HermesAdapter {
                 );
 
                 // Topic nodes from category (First-class Category topic)
-                if let Some(cat) = frontmatter.get("category").and_then(|v| v.as_str()) {
+                let category_opt = frontmatter
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        frontmatter
+                            .get("metadata")
+                            .and_then(|m| m.get("hermes"))
+                            .and_then(|h| h.get("category"))
+                            .and_then(|v| v.as_str())
+                    })
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        // Extract category from folder structure under skills directory
+                        if let Ok(rel) = path.strip_prefix(skills_root) {
+                            let comps: Vec<_> = rel.components().collect();
+                            if comps.len() > 1 {
+                                Some(comps[0].as_os_str().to_string_lossy().to_string())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(cat) = category_opt {
                     let topic_id = format!("topic:{}", cat);
                     nodes.entry(topic_id.clone()).or_insert_with(|| Node {
                         id: topic_id.clone(),
