@@ -3,7 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Node, Edge, ViewMode, HybridNodeLayout } from '../types';
-import { getNodeColor, getNodeSize } from '../utils/colors';
+import { getNodeColor, getNodeSize, getStarColorProfile } from '../utils/colors';
 import { evaluateHybridPositions, generateOrbitRingsGeometry } from '../layouts/hybridLayout';
 import {
   evaluateEdgeStyle,
@@ -11,6 +11,7 @@ import {
   selectVisibleLabels,
   type ScreenLabelCandidate,
 } from '../utils/renderRules';
+import { PostProcessingManager, type QualityLevel } from './PostProcessingManager';
 
 interface GraphCanvas3DProps {
   nodes: Node[];
@@ -28,6 +29,8 @@ interface GraphCanvas3DProps {
   isOrbitAnimating: boolean;
   isOrbitRingsVisible: boolean;
   isStarGlowVisible: boolean;
+  quality: QualityLevel;
+  onFrameStats?: (fps: number, frameTimeMs: number) => void;
   onDoubleClickNode?: (node: Node, shiftKey: boolean) => void;
   dimmedNodeIds?: Set<string>;
   onClearIsolation?: () => void;
@@ -194,7 +197,7 @@ function FreeFlyController({ enabled }: { enabled: boolean }) {
   return null;
 }
 
-// Nodes layer with instanced mesh rendering and analytical motion
+// Nodes layer: renders celestial bodies (stars, planets with atmosphere, moons, category anchors)
 function NodesLayer({
   nodes,
   positionsRef,
@@ -215,7 +218,13 @@ function NodesLayer({
   dimmedNodeIds?: Set<string>;
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
-  const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 16, 16), []);
+  const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 20, 20), []);
+
+  // Separate non-tool and non-skill nodes (tools and skills have specialized geometric representations)
+  const sphereNodes = useMemo(
+    () => nodes.filter((n) => n.kind !== 'tool' && n.kind !== 'skill'),
+    [nodes]
+  );
 
   const tempMatrix = useMemo(() => new THREE.Matrix4(), []);
   const tempPos = useMemo(() => new THREE.Vector3(), []);
@@ -223,21 +232,21 @@ function NodesLayer({
   const tempQuat = useMemo(() => new THREE.Quaternion(), []);
   const tempColor = useMemo(() => new THREE.Color(), []);
 
-  // Update instance matrices and colors every frame to support live orbital motion
+  // Update instance matrices and colors every frame
   useFrame(() => {
-    if (!meshRef.current || nodes.length === 0) return;
+    if (!meshRef.current || sphereNodes.length === 0) return;
     const mesh = meshRef.current;
-    mesh.count = nodes.length;
+    mesh.count = sphereNodes.length;
 
-    for (let i = 0; i < nodes.length; i++) {
-      const node = nodes[i];
+    for (let i = 0; i < sphereNodes.length; i++) {
+      const node = sphereNodes[i];
       const pos = positionsRef.current.get(node.id) || [0, 0, 0];
       const isSelected = selectedNode?.id === node.id;
       const isHovered = hoveredNode?.id === node.id;
       const isDimmed = dimmedNodeIds && dimmedNodeIds.size > 0 && !dimmedNodeIds.has(node.id);
 
       const baseRadius = getNodeSize(node);
-      const scaleMult = isSelected ? 1.7 : isHovered ? 1.35 : 1.0;
+      const scaleMult = isSelected ? 1.55 : isHovered ? 1.25 : 1.0;
       const radius = isDimmed ? baseRadius * 0.75 : baseRadius * scaleMult;
 
       tempPos.set(pos[0], pos[1], pos[2]);
@@ -250,7 +259,7 @@ function NodesLayer({
       if (isDimmed) {
         tempColor.lerp(new THREE.Color('#1e293b'), 0.85);
       } else if (isSelected) {
-        tempColor.offsetHSL(0, 0, 0.3);
+        tempColor.offsetHSL(0, 0, 0.25);
       } else if (isHovered) {
         tempColor.offsetHSL(0, 0, 0.15);
       }
@@ -266,25 +275,25 @@ function NodesLayer({
   return (
     <instancedMesh
       ref={meshRef}
-      args={[sphereGeo, undefined, Math.max(1, nodes.length)]}
+      args={[sphereGeo, undefined, Math.max(1, sphereNodes.length)]}
       frustumCulled={false}
       onClick={(e) => {
         e.stopPropagation();
-        if (e.instanceId !== undefined && e.instanceId < nodes.length) {
-          onSelectNode(nodes[e.instanceId]);
+        if (e.instanceId !== undefined && e.instanceId < sphereNodes.length) {
+          onSelectNode(sphereNodes[e.instanceId]);
         }
       }}
       onDoubleClick={(e) => {
         e.stopPropagation();
-        if (e.instanceId !== undefined && e.instanceId < nodes.length && onDoubleClickNode) {
-          onDoubleClickNode(nodes[e.instanceId], e.shiftKey);
+        if (e.instanceId !== undefined && e.instanceId < sphereNodes.length && onDoubleClickNode) {
+          onDoubleClickNode(sphereNodes[e.instanceId], e.shiftKey);
         }
       }}
       onPointerMove={(e) => {
         e.stopPropagation();
-        if (e.instanceId !== undefined && e.instanceId < nodes.length) {
+        if (e.instanceId !== undefined && e.instanceId < sphereNodes.length) {
           document.body.style.cursor = 'pointer';
-          onHoverNode(nodes[e.instanceId]);
+          onHoverNode(sphereNodes[e.instanceId]);
         }
       }}
       onPointerOut={() => {
@@ -292,74 +301,341 @@ function NodesLayer({
         onHoverNode(null);
       }}
     >
-      <meshStandardMaterial roughness={0.3} metalness={0.2} toneMapped={false} />
+      <meshStandardMaterial roughness={0.35} metalness={0.25} toneMapped={false} />
     </instancedMesh>
   );
 }
 
-// Star Glow halos for Star nodes
+// Distinct geometry for Tool nodes: technical station ring (torus) rotating slowly
+function ToolHubsLayer({
+  tools,
+  positionsRef,
+  selectedNode,
+  hoveredNode,
+  onSelectNode,
+  onHoverNode,
+  dimmedNodeIds,
+}: {
+  tools: Node[];
+  positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
+  selectedNode: Node | null;
+  hoveredNode: Node | null;
+  onSelectNode: (node: Node | null) => void;
+  onHoverNode: (node: Node | null) => void;
+  dimmedNodeIds?: Set<string>;
+}) {
+  const torusGeo = useMemo(() => new THREE.TorusGeometry(1, 0.32, 12, 28), []);
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+
+  const tempMatrix = useMemo(() => new THREE.Matrix4(), []);
+  const tempPos = useMemo(() => new THREE.Vector3(), []);
+  const tempScale = useMemo(() => new THREE.Vector3(), []);
+  const tempQuat = useMemo(() => new THREE.Quaternion(), []);
+  const tempColor = useMemo(() => new THREE.Color(), []);
+
+  useFrame((state) => {
+    if (!meshRef.current || tools.length === 0) return;
+    const mesh = meshRef.current;
+    mesh.count = tools.length;
+    const time = state.clock.getElapsedTime();
+
+    for (let i = 0; i < tools.length; i++) {
+      const tool = tools[i];
+      const pos = positionsRef.current.get(tool.id) || [0, 0, 0];
+      const isSelected = selectedNode?.id === tool.id;
+      const isHovered = hoveredNode?.id === tool.id;
+      const isDimmed = dimmedNodeIds && dimmedNodeIds.size > 0 && !dimmedNodeIds.has(tool.id);
+
+      const baseRadius = getNodeSize(tool);
+      const scaleMult = isSelected ? 1.6 : isHovered ? 1.3 : 1.0;
+      const radius = (isDimmed ? baseRadius * 0.75 : baseRadius * scaleMult) * 0.9;
+
+      tempPos.set(pos[0], pos[1], pos[2]);
+      tempScale.set(radius, radius, radius);
+
+      // Continuous slow technical rotation around Y and Z
+      tempQuat.setFromEuler(new THREE.Euler(0.4, time * 0.6 + i * 0.2, time * 0.3 + i * 0.1));
+      tempMatrix.compose(tempPos, tempQuat, tempScale);
+      mesh.setMatrixAt(i, tempMatrix);
+
+      // Technical cyan
+      tempColor.set('#06b6d4');
+      if (isDimmed) {
+        tempColor.lerp(new THREE.Color('#1e293b'), 0.85);
+      } else if (isSelected) {
+        tempColor.set('#38bdf8');
+      } else if (isHovered) {
+        tempColor.set('#67e8f9');
+      }
+      mesh.setColorAt(i, tempColor);
+    }
+
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) {
+      mesh.instanceColor.needsUpdate = true;
+    }
+  });
+
+  if (tools.length === 0) return null;
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[torusGeo, undefined, Math.max(1, tools.length)]}
+      frustumCulled={false}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (e.instanceId !== undefined && e.instanceId < tools.length) {
+          onSelectNode(tools[e.instanceId]);
+        }
+      }}
+      onPointerMove={(e) => {
+        e.stopPropagation();
+        if (e.instanceId !== undefined && e.instanceId < tools.length) {
+          document.body.style.cursor = 'pointer';
+          onHoverNode(tools[e.instanceId]);
+        }
+      }}
+      onPointerOut={() => {
+        document.body.style.cursor = 'default';
+        onHoverNode(null);
+      }}
+    >
+      <meshStandardMaterial
+        roughness={0.25}
+        metalness={0.7}
+        emissive="#0891b2"
+        emissiveIntensity={0.25}
+        toneMapped={false}
+      />
+    </instancedMesh>
+  );
+}
+
+// Skill nebula: glowing particle clouds for category skills
+function SkillNebulaLayer({
+  skills,
+  positionsRef,
+}: {
+  skills: Node[];
+  positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
+}) {
+  const pointsGeo = useMemo(() => {
+    const pts: number[] = [];
+    const colors: number[] = [];
+    const color = new THREE.Color('#818cf8');
+
+    for (const skill of skills) {
+      const pos = positionsRef.current.get(skill.id) || [0, 0, 0];
+      pts.push(pos[0], pos[1], pos[2]);
+      colors.push(color.r, color.g, color.b);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    return geo;
+  }, [skills, positionsRef]);
+
+  // Texture for soft glowing circular particles
+  const particleTexture = useMemo(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+      grad.addColorStop(0.3, 'rgba(165, 180, 252, 0.85)');
+      grad.addColorStop(0.7, 'rgba(99, 102, 241, 0.25)');
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 64, 64);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    return tex;
+  }, []);
+
+  if (skills.length === 0) return null;
+
+  return (
+    <points geometry={pointsGeo}>
+      <pointsMaterial
+        size={11}
+        sizeAttenuation
+        map={particleTexture}
+        transparent
+        opacity={0.82}
+        blending={THREE.AdditiveBlending}
+        depthWrite={false}
+        vertexColors
+      />
+    </points>
+  );
+}
+
+// Star emissive cores and glowing pulsating coronas with color temperature
 function StarGlowLayer({
   nodes,
-  hybridLayout,
   positionsRef,
   isStarGlowVisible,
 }: {
   nodes: Node[];
-  hybridLayout: Record<string, HybridNodeLayout>;
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
   isStarGlowVisible: boolean;
 }) {
-  const glowGeo = useMemo(() => new THREE.SphereGeometry(1, 16, 16), []);
-  const glowMat = useMemo(
-    () =>
-      new THREE.MeshBasicMaterial({
-        color: new THREE.Color('#c084fc'),
-        transparent: true,
-        opacity: 0.18,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
-    []
-  );
+  const coronaGeo = useMemo(() => new THREE.SphereGeometry(1, 24, 24), []);
+  const starNodes = useMemo(() => nodes.filter((n) => n.kind === 'project'), [nodes]);
+  const groupRef = useRef<THREE.Group>(null);
+
+  useFrame((state) => {
+    if (!groupRef.current) return;
+    const time = state.clock.getElapsedTime();
+    // Subtle pulsating oscillation
+    const pulse = 1.0 + Math.sin(time * 1.6) * 0.08;
+    const children = groupRef.current.children;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i] as THREE.Group;
+      const baseScale = child.userData.baseScale || 1.0;
+      const s = baseScale * pulse;
+      if (child.children[0]) {
+        child.children[0].scale.set(s, s, s);
+      }
+    }
+  });
 
   if (!isStarGlowVisible) return null;
 
-  const starNodes = nodes.filter(
-    (n) => n.kind === 'project' && !n.is_generic_root && hybridLayout[n.id]?.role === 'star'
-  );
-
   return (
-    <group>
+    <group ref={groupRef}>
       {starNodes.map((star) => {
         const pos = positionsRef.current.get(star.id) || [0, 0, 0];
-        const size = getNodeSize(star) * 2.2;
+        const profile = getStarColorProfile(star);
+        const baseSize = getNodeSize(star);
+        const coronaScale = baseSize * (star.is_generic_root ? 1.6 : 2.5);
+
         return (
-          <mesh
-            key={`glow-${star.id}`}
-            geometry={glowGeo}
-            material={glowMat}
+          <group
+            key={`star-system-${star.id}`}
             position={[pos[0], pos[1], pos[2]]}
-            scale={[size, size, size]}
-          />
+            userData={{ baseScale: coronaScale }}
+          >
+            {/* Soft outer corona halo */}
+            <mesh geometry={coronaGeo} scale={[coronaScale, coronaScale, coronaScale]}>
+              <meshBasicMaterial
+                color={profile.coronaColor}
+                transparent
+                opacity={star.is_generic_root ? 0.12 : 0.28}
+                blending={THREE.AdditiveBlending}
+                depthWrite={false}
+              />
+            </mesh>
+
+            {/* Inner emissive core */}
+            <mesh scale={[baseSize * 0.9, baseSize * 0.9, baseSize * 0.9]}>
+              <sphereGeometry args={[1, 24, 24]} />
+              <meshBasicMaterial color={profile.coreColor} toneMapped={false} />
+            </mesh>
+          </group>
         );
       })}
     </group>
   );
 }
 
-// Orbit rings layer with faint circular orbits
+// Selection and Hover rings for smooth targeting without snapping
+function SelectionRingLayer({
+  selectedNode,
+  hoveredNode,
+  positionsRef,
+}: {
+  selectedNode: Node | null;
+  hoveredNode: Node | null;
+  positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
+}) {
+  const ringGeo = useMemo(() => new THREE.RingGeometry(1.2, 1.45, 32), []);
+  const selectMat = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: '#38bdf8',
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.9,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    []
+  );
+  const hoverMat = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: '#f8fafc',
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.55,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    []
+  );
+
+  const selectMeshRef = useRef<THREE.Mesh>(null);
+  const hoverMeshRef = useRef<THREE.Mesh>(null);
+  const { camera } = useThree();
+
+  useFrame((state) => {
+    const time = state.clock.getElapsedTime();
+
+    if (selectMeshRef.current && selectedNode) {
+      const pos = positionsRef.current.get(selectedNode.id);
+      if (pos) {
+        selectMeshRef.current.position.set(pos[0], pos[1], pos[2]);
+        const size = getNodeSize(selectedNode) * (1.6 + Math.sin(time * 3.0) * 0.08);
+        selectMeshRef.current.scale.set(size, size, size);
+        selectMeshRef.current.lookAt(camera.position);
+      }
+    }
+
+    if (hoverMeshRef.current && hoveredNode && hoveredNode.id !== selectedNode?.id) {
+      const pos = positionsRef.current.get(hoveredNode.id);
+      if (pos) {
+        hoverMeshRef.current.position.set(pos[0], pos[1], pos[2]);
+        const size = getNodeSize(hoveredNode) * (1.45 + Math.sin(time * 4.0) * 0.06);
+        hoverMeshRef.current.scale.set(size, size, size);
+        hoverMeshRef.current.lookAt(camera.position);
+      }
+    }
+  });
+
+  return (
+    <group>
+      {selectedNode && (
+        <mesh ref={selectMeshRef} geometry={ringGeo} material={selectMat} />
+      )}
+      {hoveredNode && hoveredNode.id !== selectedNode?.id && (
+        <mesh ref={hoverMeshRef} geometry={ringGeo} material={hoverMat} />
+      )}
+    </group>
+  );
+}
+
+// Orbit rings layer with faint circular orbits, brightening for hovered system
 function OrbitRingsLayer({
   nodes,
   hybridLayout,
   positionsRef,
   isOrbitRingsVisible,
   currentMode,
+  hoveredNode,
+  selectedNode,
 }: {
   nodes: Node[];
   hybridLayout: Record<string, HybridNodeLayout>;
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
   isOrbitRingsVisible: boolean;
   currentMode: ViewMode;
+  hoveredNode: Node | null;
+  selectedNode: Node | null;
 }) {
   const lineGeo = useMemo(() => {
     if (!isOrbitRingsVisible || currentMode !== 'hybrid') {
@@ -371,11 +647,24 @@ function OrbitRingsLayer({
     return geo;
   }, [nodes, hybridLayout, positionsRef, isOrbitRingsVisible, currentMode]);
 
+  const isSystemActive = useMemo(() => {
+    const active = hoveredNode || selectedNode;
+    if (!active) return false;
+    if (active.kind === 'project') return true;
+    return !!hybridLayout[active.id]?.orbit?.parent_id;
+  }, [hoveredNode, selectedNode, hybridLayout]);
+
   if (!isOrbitRingsVisible || currentMode !== 'hybrid') return null;
 
   return (
     <lineSegments geometry={lineGeo}>
-      <lineBasicMaterial color="#6366f1" transparent opacity={0.16} depthWrite={false} />
+      <lineBasicMaterial
+        color="#818cf8"
+        transparent
+        opacity={isSystemActive ? 0.38 : 0.09}
+        blending={THREE.AdditiveBlending}
+        depthWrite={false}
+      />
     </lineSegments>
   );
 }
@@ -666,11 +955,17 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
   isOrbitAnimating,
   isOrbitRingsVisible,
   isStarGlowVisible,
+  quality,
+  onFrameStats,
   onDoubleClickNode,
   dimmedNodeIds,
   onClearIsolation,
 }) => {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  // Separate Tool nodes and Skill nodes for specialized rendering
+  const toolNodes = useMemo(() => nodes.filter((n) => n.kind === 'tool'), [nodes]);
+  const skillNodes = useMemo(() => nodes.filter((n) => n.kind === 'skill'), [nodes]);
 
   // Current analytical or static positions of nodes
   const positionsRef = useRef<Map<string, [number, number, number]>>(new Map());
@@ -771,19 +1066,31 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           if (onClearIsolation) onClearIsolation();
         }}
       >
-        <ambientLight intensity={0.6} />
-        <pointLight position={[300, 400, 500]} intensity={1.3} />
-        <pointLight position={[-300, -300, -400]} intensity={0.7} />
+        {/* Parallax Cosmic Background & Atmosphere */}
+        <fogExp2 attach="fog" args={['#030712', 0.00032]} />
+        <ambientLight intensity={0.5} />
+        <directionalLight position={[200, 400, 300]} intensity={0.75} />
+        <pointLight position={[0, 0, 0]} intensity={1.4} distance={2500} decay={1.5} />
 
-        {/* Space background stars */}
+        {/* Deep parallax starfield layer */}
         <Stars
-          radius={2200}
-          depth={250}
-          count={5000}
+          radius={2000}
+          depth={300}
+          count={3500}
           factor={4}
           saturation={0.5}
           fade
-          speed={0.4}
+          speed={0.3}
+        />
+        {/* Closer brighter starfield layer */}
+        <Stars
+          radius={900}
+          depth={150}
+          count={1200}
+          factor={6}
+          saturation={0.7}
+          fade
+          speed={0.7}
         />
 
         <SceneUpdater />
@@ -798,6 +1105,14 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
 
         <FreeFlyController enabled={cameraControlMode === 'fly'} />
 
+        {/* Selection & Hover Highlight Rings */}
+        <SelectionRingLayer
+          selectedNode={selectedNode}
+          hoveredNode={hoveredNode}
+          positionsRef={positionsRef}
+        />
+
+        {/* Instanced Celestial Spheres (Stars, Planets, Moons, Category Anchors) */}
         <NodesLayer
           nodes={nodes}
           positionsRef={positionsRef}
@@ -809,21 +1124,42 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           dimmedNodeIds={dimmedNodeIds}
         />
 
+        {/* Tool Hubs: Distinct technical station toruses */}
+        <ToolHubsLayer
+          tools={toolNodes}
+          positionsRef={positionsRef}
+          selectedNode={selectedNode}
+          hoveredNode={hoveredNode}
+          onSelectNode={onSelectNode}
+          onHoverNode={onHoverNode}
+          dimmedNodeIds={dimmedNodeIds}
+        />
+
+        {/* Skill Nebula: Soft glowing particle cloud per category */}
+        <SkillNebulaLayer
+          skills={skillNodes}
+          positionsRef={positionsRef}
+        />
+
+        {/* Star Pulsing Emissive Core & Corona Halo with Color Temperature */}
         <StarGlowLayer
           nodes={nodes}
-          hybridLayout={hybridLayout}
           positionsRef={positionsRef}
           isStarGlowVisible={isStarGlowVisible}
         />
 
+        {/* Dynamic Orbit Rings */}
         <OrbitRingsLayer
           nodes={nodes}
           hybridLayout={hybridLayout}
           positionsRef={positionsRef}
           isOrbitRingsVisible={isOrbitRingsVisible}
           currentMode={currentMode}
+          hoveredNode={hoveredNode}
+          selectedNode={selectedNode}
         />
 
+        {/* Collision-Avoidance Screen Labels */}
         <LabelsLayer
           nodes={nodes}
           positionsRef={positionsRef}
@@ -832,6 +1168,7 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           hybridLayout={hybridLayout}
         />
 
+        {/* Clean Curved Cross-System Bridge Arcs */}
         <EdgesLayer
           edges={edges}
           nodes={nodes}
@@ -840,6 +1177,9 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           selectedNode={selectedNode}
           currentMode={currentMode}
         />
+
+        {/* Post-Processing Effects Composer (Bloom & Vignette) */}
+        <PostProcessingManager quality={quality} onFrameStats={onFrameStats} />
 
         <OrbitControls
           enabled={cameraControlMode === 'orbit'}

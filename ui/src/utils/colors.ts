@@ -39,6 +39,48 @@ export function getNodeColor(node: Node): string {
   }
 }
 
+export interface StarColorProfile {
+  coreColor: string;
+  coronaColor: string;
+  tier: 'hot' | 'warm' | 'dormant' | 'root';
+}
+
+/**
+ * Returns emissive core and corona colors based on activity color temperature:
+ * - Hot white-blue: highly active (degree >= 8 or access_count >= 3)
+ * - Warm orange / amber: moderate activity (degree >= 2)
+ * - Dim deep red: dormant (degree <= 1)
+ * - Dim slate gray: generic root project
+ */
+export function getStarColorProfile(star: Node): StarColorProfile {
+  if (star.is_generic_root) {
+    return {
+      coreColor: '#94a3b8',
+      coronaColor: '#475569',
+      tier: 'root',
+    };
+  }
+  if (star.degree >= 8 || star.access_count >= 3) {
+    return {
+      coreColor: '#f0f9ff',
+      coronaColor: '#38bdf8', // Electric white-blue
+      tier: 'hot',
+    };
+  }
+  if (star.degree >= 2) {
+    return {
+      coreColor: '#fffbeb',
+      coronaColor: '#f59e0b', // Warm amber / orange
+      tier: 'warm',
+    };
+  }
+  return {
+    coreColor: '#fee2e2',
+    coronaColor: '#ef4444', // Dim red
+    tier: 'dormant',
+  };
+}
+
 export function getNodeSize(node: Node): number {
   if (node.kind === 'project') {
     return clampStarRadius(node.degree, node.access_count, node.is_generic_root);

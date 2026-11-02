@@ -13,6 +13,7 @@ import { HeaderBar } from './components/HeaderBar';
 import { FilterBar } from './components/FilterBar';
 import { SidePanel } from './components/SidePanel';
 import { SourceHealthPanel } from './components/SourceHealthPanel';
+import type { QualityLevel } from './components/PostProcessingManager';
 import { Loader2, AlertCircle } from 'lucide-react';
 
 const webLayout = new WebLayoutEngine();
@@ -30,6 +31,11 @@ export const App: React.FC = () => {
   const [hoveredNode, setHoveredNode] = useState<Node | null>(null);
   const [currentMode, setCurrentMode] = useState<ViewMode>('hybrid');
   const [isHealthOpen, setIsHealthOpen] = useState(false);
+  const [quality, setQuality] = useState<QualityLevel>('medium');
+  const [fpsStats, setFpsStats] = useState<{ fps: number; frameTimeMs: number }>({
+    fps: 60,
+    frameTimeMs: 16.6,
+  });
 
   // Section B rendering controls
   const [isOrbitAnimating, setIsOrbitAnimating] = useState<boolean>(true);
@@ -311,6 +317,11 @@ export const App: React.FC = () => {
         totalNodesCount={data?.snapshot.nodes.length || 0}
         visibleNodesCount={visibleNodes.length}
         hiddenBreakdown={hiddenBreakdown}
+        quality={quality}
+        onToggleQuality={() =>
+          setQuality((prev) => (prev === 'low' ? 'medium' : prev === 'medium' ? 'high' : 'low'))
+        }
+        fpsStats={fpsStats}
         onFrameAll={handleFrameAll}
         onResetView={handleResetView}
       />
@@ -349,6 +360,8 @@ export const App: React.FC = () => {
           isOrbitAnimating={isOrbitAnimating}
           isOrbitRingsVisible={isOrbitRingsVisible}
           isStarGlowVisible={isStarGlowVisible}
+          quality={quality}
+          onFrameStats={(fps, frameTimeMs) => setFpsStats({ fps, frameTimeMs })}
           onDoubleClickNode={(node, shiftKey) => {
             setIsolatedState({
               centerNodeId: node.id,

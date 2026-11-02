@@ -17,6 +17,9 @@ interface HeaderBarProps {
   totalNodesCount: number;
   visibleNodesCount: number;
   hiddenBreakdown?: string[];
+  quality?: 'low' | 'medium' | 'high';
+  onToggleQuality?: () => void;
+  fpsStats?: { fps: number; frameTimeMs: number };
   onFrameAll: () => void;
   onResetView: () => void;
 }
@@ -35,6 +38,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   totalNodesCount,
   visibleNodesCount,
   hiddenBreakdown,
+  quality,
+  onToggleQuality,
+  fpsStats,
   onFrameAll,
   onResetView,
 }) => {
@@ -262,6 +268,52 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <RotateCcw size={12} color="#94a3b8" />
           <span>Reset view</span>
         </button>
+
+        {/* Quality Level Selector & Performance HUD */}
+        {quality && (
+          <button
+            onClick={onToggleQuality}
+            title={`Quality: ${quality.toUpperCase()} (${
+              fpsStats ? `${fpsStats.frameTimeMs.toFixed(1)}ms / ${fpsStats.fps}fps` : ''
+            })\nClick to cycle: LOW (no post-processing) -> MEDIUM (crisp bloom) -> HIGH (bloom + vignette)`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '3px 9px',
+              backgroundColor:
+                quality === 'high'
+                  ? 'rgba(168, 85, 247, 0.2)'
+                  : quality === 'medium'
+                  ? 'rgba(56, 189, 248, 0.2)'
+                  : 'rgba(100, 116, 139, 0.2)',
+              border: `1px solid ${
+                quality === 'high'
+                  ? 'rgba(168, 85, 247, 0.4)'
+                  : quality === 'medium'
+                  ? 'rgba(56, 189, 248, 0.4)'
+                  : 'rgba(100, 116, 139, 0.4)'
+              }`,
+              borderRadius: '6px',
+              color:
+                quality === 'high'
+                  ? '#c084fc'
+                  : quality === 'medium'
+                  ? '#38bdf8'
+                  : '#94a3b8',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            <Activity size={12} />
+            <span>
+              {quality.toUpperCase()}
+              {fpsStats ? ` · ${fpsStats.frameTimeMs.toFixed(0)}ms` : ''}
+            </span>
+          </button>
+        )}
       </div>
 
       {/* Center: Search with instant dropdown */}
