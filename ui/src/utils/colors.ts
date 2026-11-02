@@ -1,4 +1,5 @@
 import type { Node } from '../types';
+import { clampStarRadius } from './renderRules';
 
 export function getNodeColor(node: Node): string {
   if (node.kind === 'project') {
@@ -6,6 +7,10 @@ export function getNodeColor(node: Node): string {
       return '#64748b'; // Dimmer slate gray for generic root stars
     }
     return '#a855f7'; // Purple for projects (shared star anchors)
+  }
+
+  if (node.kind === 'persona') {
+    return '#f43f5e'; // Rose pink for agent persona/config
   }
 
   if (node.kind === 'topic') {
@@ -36,11 +41,10 @@ export function getNodeColor(node: Node): string {
 
 export function getNodeSize(node: Node): number {
   if (node.kind === 'project') {
-    if (node.is_generic_root) {
-      return 5.5; // Generic root star is smaller and dimmer
-    }
-    // Star size by activity (conversation and step counts / degree / access_count)
-    return 8.0 + Math.min(12.0, Math.sqrt(node.degree) * 2.5 + (node.access_count > 0 ? Math.log2(node.access_count + 1) * 2.0 : 0));
+    return clampStarRadius(node.degree, node.access_count, node.is_generic_root);
+  }
+  if (node.kind === 'persona') {
+    return 4.5;
   }
   if (node.kind === 'topic') {
     if (node.subkind === 'category') {

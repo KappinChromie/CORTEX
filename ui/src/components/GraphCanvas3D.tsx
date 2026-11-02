@@ -1,10 +1,16 @@
-import React, { useRef, useMemo, useEffect, useState } from 'react';
+import React, { useRef, useMemo, useEffect, useState, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Node, Edge, ViewMode, HybridNodeLayout } from '../types';
 import { getNodeColor, getNodeSize } from '../utils/colors';
 import { evaluateHybridPositions, generateOrbitRingsGeometry } from '../layouts/hybridLayout';
+import {
+  evaluateEdgeStyle,
+  computeBoundingSphereFraming,
+  selectVisibleLabels,
+  type ScreenLabelCandidate,
+} from '../utils/renderRules';
 
 interface GraphCanvas3DProps {
   nodes: Node[];
@@ -27,7 +33,7 @@ interface GraphCanvas3DProps {
   onClearIsolation?: () => void;
 }
 
-// Camera controller that smoothly animates camera to selected node or frames all nodes
+// Camera controller that smoothly animates camera to selected node or frames all nodes using bounding sphere
 function CameraController({
   selectedNode,
   positionsRef,
@@ -44,6 +50,42 @@ function CameraController({
   const { camera } = useThree();
   const targetCamPos = useRef<THREE.Vector3 | null>(null);
   const targetLookAt = useRef<THREE.Vector3 | null>(null);
+  const hasInitiallyFramed = useRef<boolean>(false);
+
+  const applyBoundingSphereFraming = useCallback(() => {
+    if (nodes.length === 0) return;
+    const pts: [number, number, number][] = [];
+    for (const node of nodes) {
+      const pos = positionsRef.current.get(node.id);
+      if (pos) pts.push(pos);
+    }
+    if (pts.length === 0) return;
+
+    const perspCam = camera as THREE.PerspectiveCamera;
+    const framing = computeBoundingSphereFraming(pts, perspCam.fov || 50);
+    if (framing) {
+      targetLookAt.current = framing.center;
+      targetCamPos.current = new THREE.Vector3(
+        framing.center.x,
+        framing.center.y + framing.distance * 0.35,
+        framing.center.z + framing.distance * 0.95
+      );
+    }
+  }, [nodes, positionsRef, camera]);
+
+  // Initial camera framing on mount / when node positions arrive
+  useEffect(() => {
+    if (!hasInitiallyFramed.current && nodes.length > 0) {
+      let count = 0;
+      for (const n of nodes) {
+        if (positionsRef.current.has(n.id)) count++;
+      }
+      if (count > 0) {
+        applyBoundingSphereFraming();
+        hasInitiallyFramed.current = true;
+      }
+    }
+  }, [nodes, positionsRef, applyBoundingSphereFraming]);
 
   // Focus on selected node (search-to-fly or direct selection)
   useEffect(() => {
@@ -57,42 +99,12 @@ function CameraController({
     }
   }, [selectedNode, positionsRef]);
 
-  // Reset view to default camera position
+  // Reset view & Frame all triggers
   useEffect(() => {
-    if (resetViewTrigger > 0) {
-      targetLookAt.current = new THREE.Vector3(0, 0, 0);
-      targetCamPos.current = new THREE.Vector3(0, 160, 800);
+    if (resetViewTrigger > 0 || frameAllTrigger > 0) {
+      applyBoundingSphereFraming();
     }
-  }, [resetViewTrigger]);
-
-  // Frame all visible nodes on trigger
-  useEffect(() => {
-    if (frameAllTrigger > 0 && nodes.length > 0) {
-      const box = new THREE.Box3();
-      for (const node of nodes) {
-        const pos = positionsRef.current.get(node.id);
-        if (pos) {
-          box.expandByPoint(new THREE.Vector3(pos[0], pos[1], pos[2]));
-        }
-      }
-
-      if (!box.isEmpty()) {
-        const center = new THREE.Vector3();
-        box.getCenter(center);
-        const size = new THREE.Vector3();
-        box.getSize(size);
-        const maxDim = Math.max(size.x, size.y, size.z, 200);
-
-        const perspCam = camera as THREE.PerspectiveCamera;
-        const fov = (perspCam.fov || 50) * (Math.PI / 180);
-        let dist = (maxDim / 2 / Math.tan(fov / 2)) * 1.35;
-        dist = Math.max(dist, 250);
-
-        targetLookAt.current = center;
-        targetCamPos.current = new THREE.Vector3(center.x, center.y + dist * 0.25, center.z + dist);
-      }
-    }
-  }, [frameAllTrigger, nodes, positionsRef, camera]);
+  }, [resetViewTrigger, frameAllTrigger, applyBoundingSphereFraming]);
 
   useFrame(() => {
     if (targetCamPos.current && targetLookAt.current) {
@@ -368,72 +380,164 @@ function OrbitRingsLayer({
   );
 }
 
-// Labels layer: shows titles for Stars, Category Anchors, and Hovered/Selected nodes
+// Labels layer: shows titles adhering to policy (stars always, planets within proximity, category anchors, hovered/selected)
+// with screen-space collision avoidance capped at 40 labels
 function LabelsLayer({
   nodes,
   positionsRef,
   selectedNode,
   hoveredNode,
+  hybridLayout,
 }: {
   nodes: Node[];
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
   selectedNode: Node | null;
   hoveredNode: Node | null;
+  hybridLayout: Record<string, HybridNodeLayout>;
 }) {
-  // Star projects and category anchors
-  const prominentNodes = useMemo(
-    () =>
-      nodes.filter(
-        (n) =>
-          (n.kind === 'project' && !n.is_generic_root) ||
-          (n.kind === 'topic' && n.subkind === 'category') ||
-          n.id === selectedNode?.id ||
-          n.id === hoveredNode?.id
-      ),
-    [nodes, selectedNode, hoveredNode]
-  );
+  const { camera, size } = useThree();
+  const [visibleLabels, setVisibleLabels] = useState<ScreenLabelCandidate[]>([]);
+  const frameCount = useRef(0);
+
+  useFrame(() => {
+    frameCount.current++;
+    // Project and check collision every 3 frames for smooth 60fps performance
+    if (frameCount.current % 3 !== 0) return;
+
+    const candidates: ScreenLabelCandidate[] = [];
+    const camPos = camera.position;
+
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const pos = positionsRef.current.get(node.id);
+      if (!pos) continue;
+
+      const isSelected = selectedNode?.id === node.id;
+      const isHovered = hoveredNode?.id === node.id;
+      const isStar = node.kind === 'project' && !node.is_generic_root;
+      const isCat = node.kind === 'topic' && node.subkind === 'category';
+      const isPlanet = node.kind === 'conversation' || node.kind === 'session';
+
+      // Label Policy Check:
+      // - Hovered / Selected: always
+      // - Star: always
+      // - Category anchor: always in nebula
+      // - Planet: only when camera distance to parent star is < 280
+      let eligible = isSelected || isHovered || isStar || isCat;
+
+      if (!eligible && isPlanet) {
+        const parentId = hybridLayout[node.id]?.orbit?.parent_id;
+        if (parentId) {
+          const starPos = positionsRef.current.get(parentId);
+          if (starPos) {
+            const distToStar = camPos.distanceTo(
+              new THREE.Vector3(starPos[0], starPos[1], starPos[2])
+            );
+            if (distToStar < 280.0) {
+              eligible = true;
+            }
+          }
+        }
+      }
+
+      if (!eligible) continue;
+
+      // Project 3D position into 2D NDC
+      const v = new THREE.Vector3(pos[0], pos[1] + (isStar ? 12 : 6), pos[2]);
+      const cameraDist = camPos.distanceTo(v);
+      v.project(camera);
+
+      // Must be in front of camera
+      if (v.z < -1 || v.z > 1) continue;
+      // Bounded within screen with 10% margin
+      if (v.x < -1.1 || v.x > 1.1 || v.y < -1.1 || v.y > 1.1) continue;
+
+      const sx = (v.x * 0.5 + 0.5) * size.width;
+      const sy = (-v.y * 0.5 + 0.5) * size.height;
+
+      const width = Math.min(180, Math.max(60, node.title.length * 7 + 16));
+      const height = 24;
+
+      const priority =
+        (isSelected ? 5000 : 0) +
+        (isHovered ? 2500 : 0) +
+        (isStar ? 400 : 0) +
+        (isCat ? 200 : 0) +
+        (isPlanet ? 100 : 0) +
+        node.importance * 10;
+
+      candidates.push({
+        id: node.id,
+        node,
+        screenX: sx,
+        screenY: sy,
+        worldPos: pos,
+        cameraDist,
+        priority,
+        width,
+        height,
+        isStar,
+        isCategory: isCat,
+        isPlanet,
+      });
+    }
+
+    const accepted = selectVisibleLabels(candidates, 40);
+    setVisibleLabels(accepted);
+  });
 
   return (
     <group>
-      {prominentNodes.map((node) => {
-        const pos = positionsRef.current.get(node.id) || [0, 0, 0];
+      {visibleLabels.map((cand) => {
+        const { node, worldPos, cameraDist, isStar, isCategory: isCat } = cand;
         const isSelected = selectedNode?.id === node.id;
         const isHovered = hoveredNode?.id === node.id;
-        const isStar = node.kind === 'project';
-        const isCat = node.kind === 'topic' && node.subkind === 'category';
+
+        // Smooth distance fade for star labels
+        const opacity = isSelected || isHovered
+          ? 1.0
+          : isStar
+          ? Math.max(0.35, Math.min(1.0, 1.25 - cameraDist / 1800))
+          : 0.9;
 
         return (
           <Html
             key={`label-${node.id}`}
-            position={[pos[0], pos[1] + (isStar ? 12 : 7), pos[2]]}
+            position={[worldPos[0], worldPos[1] + (isStar ? 12 : 6), worldPos[2]]}
             center
             distanceFactor={750}
+            occlude={false}
             style={{
               pointerEvents: 'none',
               userSelect: 'none',
               whiteSpace: 'nowrap',
               fontSize: isSelected || isHovered ? '12px' : isStar ? '11px' : '9px',
               fontWeight: isStar ? 700 : 600,
+              opacity,
               color: isSelected
                 ? '#38bdf8'
                 : isHovered
                 ? '#f8fafc'
                 : isStar
                 ? '#e2e8f0'
+                : isCat
+                ? '#38bdf8'
                 : '#94a3b8',
               backgroundColor: isSelected || isHovered
-                ? 'rgba(15, 23, 42, 0.85)'
-                : 'rgba(15, 23, 42, 0.5)',
-              padding: '2px 6px',
-              borderRadius: '4px',
+                ? 'rgba(15, 23, 42, 0.9)'
+                : 'rgba(15, 23, 42, 0.65)',
+              padding: '2px 7px',
+              borderRadius: '5px',
               border: `1px solid ${
                 isSelected
-                  ? 'rgba(56, 189, 248, 0.5)'
+                  ? 'rgba(56, 189, 248, 0.6)'
                   : isHovered
-                  ? 'rgba(248, 250, 252, 0.3)'
-                  : 'rgba(148, 163, 184, 0.15)'
+                  ? 'rgba(248, 250, 252, 0.4)'
+                  : 'rgba(148, 163, 184, 0.2)'
               }`,
-              textShadow: '0 2px 4px rgba(0,0,0,0.8)',
+              textShadow: '0 2px 4px rgba(0,0,0,0.9)',
+              boxShadow: isSelected || isHovered ? '0 0 10px rgba(56, 189, 248, 0.3)' : 'none',
+              letterSpacing: '0.02em',
             }}
           >
             {isCat ? `§ ${node.title}` : node.title}
@@ -444,32 +548,105 @@ function LabelsLayer({
   );
 }
 
-// Edges layer with faint line segments
+// Edges layer: hides skill-to-category and tag hairballs; renders cross-system edges as thin curved arcs
 function EdgesLayer({
   edges,
+  nodes,
   positionsRef,
+  hoveredNode,
+  selectedNode,
+  currentMode,
 }: {
   edges: Edge[];
+  nodes: Node[];
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
+  hoveredNode: Node | null;
+  selectedNode: Node | null;
+  currentMode: ViewMode;
 }) {
-  const lineGeometry = useMemo(() => {
-    const points: number[] = [];
+  const nodesById = useMemo(() => {
+    const map = new Map<string, Node>();
+    for (const n of nodes) map.set(n.id, n);
+    return map;
+  }, [nodes]);
+
+  const { normalLinesGeo, highlightLinesGeo } = useMemo(() => {
+    const normalPts: number[] = [];
+    const highlightPts: number[] = [];
+
+    const activeId = hoveredNode?.id || selectedNode?.id;
+
     for (const edge of edges) {
+      const style = evaluateEdgeStyle(
+        edge,
+        nodesById,
+        hoveredNode?.id,
+        selectedNode?.id,
+        currentMode === 'hybrid'
+      );
+
+      if (style !== 'curved_arc') continue;
+
       const p1 = positionsRef.current.get(edge.from);
       const p2 = positionsRef.current.get(edge.to);
-      if (p1 && p2) {
-        points.push(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]);
+      if (!p1 || !p2) continue;
+
+      const v1 = new THREE.Vector3(p1[0], p1[1], p1[2]);
+      const v2 = new THREE.Vector3(p2[0], p2[1], p2[2]);
+      const dist = v1.distanceTo(v2);
+
+      const mid = new THREE.Vector3().addVectors(v1, v2).multiplyScalar(0.5);
+      const arcHeight = Math.min(60.0, dist * 0.22);
+      mid.y += arcHeight;
+
+      const curve = new THREE.QuadraticBezierCurve3(v1, mid, v2);
+      const points = curve.getPoints(8);
+
+      const isHighlight =
+        activeId && (edge.from === activeId || edge.to === activeId);
+      const targetPts = isHighlight ? highlightPts : normalPts;
+
+      for (let j = 0; j < points.length - 1; j++) {
+        targetPts.push(
+          points[j].x, points[j].y, points[j].z,
+          points[j + 1].x, points[j + 1].y, points[j + 1].z
+        );
       }
     }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
-    return geometry;
-  }, [edges, positionsRef]);
+
+    const nGeo = new THREE.BufferGeometry();
+    nGeo.setAttribute('position', new THREE.Float32BufferAttribute(normalPts, 3));
+
+    const hGeo = new THREE.BufferGeometry();
+    hGeo.setAttribute('position', new THREE.Float32BufferAttribute(highlightPts, 3));
+
+    return { normalLinesGeo: nGeo, highlightLinesGeo: hGeo };
+  }, [edges, nodesById, positionsRef, hoveredNode, selectedNode, currentMode]);
 
   return (
-    <lineSegments geometry={lineGeometry}>
-      <lineBasicMaterial color="#334155" transparent opacity={0.25} depthWrite={false} />
-    </lineSegments>
+    <group>
+      {/* Subtle ambient cross-system curved arcs */}
+      <lineSegments geometry={normalLinesGeo}>
+        <lineBasicMaterial
+          color="#818cf8"
+          transparent
+          opacity={0.14}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </lineSegments>
+
+      {/* Bright highlighted curved arcs for active hovered/selected node */}
+      <lineSegments geometry={highlightLinesGeo}>
+        <lineBasicMaterial
+          color="#38bdf8"
+          transparent
+          opacity={0.85}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </lineSegments>
+    </group>
   );
 }
 
@@ -652,9 +829,17 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           positionsRef={positionsRef}
           selectedNode={selectedNode}
           hoveredNode={hoveredNode}
+          hybridLayout={hybridLayout}
         />
 
-        <EdgesLayer edges={edges} positionsRef={positionsRef} />
+        <EdgesLayer
+          edges={edges}
+          nodes={nodes}
+          positionsRef={positionsRef}
+          hoveredNode={hoveredNode}
+          selectedNode={selectedNode}
+          currentMode={currentMode}
+        />
 
         <OrbitControls
           enabled={cameraControlMode === 'orbit'}

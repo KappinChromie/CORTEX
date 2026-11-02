@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 pub mod hybrid_layout;
+pub mod render_rules;
+
+pub use render_rules::{
+    clamp_star_radius, compute_bounding_sphere_framing, evaluate_edge_style,
+    select_visible_labels, EdgeRenderStyle, LabelCandidate,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodePosition3D {
