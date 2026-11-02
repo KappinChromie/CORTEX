@@ -84,11 +84,13 @@ function CameraController({
         if (positionsRef.current.has(n.id)) count++;
       }
       if (count > 0) {
-        applyBoundingSphereFraming();
+        if (!selectedNode) {
+          applyBoundingSphereFraming();
+        }
         hasInitiallyFramed.current = true;
       }
     }
-  }, [nodes, positionsRef, applyBoundingSphereFraming]);
+  }, [nodes, positionsRef, applyBoundingSphereFraming, selectedNode]);
 
   // Focus on selected node (search-to-fly or direct selection)
   useEffect(() => {
@@ -96,11 +98,14 @@ function CameraController({
       const pos = positionsRef.current.get(selectedNode.id);
       if (pos) {
         targetLookAt.current = new THREE.Vector3(pos[0], pos[1], pos[2]);
-        const dist = Math.max(35, getNodeSize(selectedNode) * 5.0);
-        targetCamPos.current = new THREE.Vector3(pos[0], pos[1] + dist * 0.4, pos[2] + dist * 1.2);
+        const dist = Math.max(35, getNodeSize(selectedNode) * 4.5);
+        targetCamPos.current = new THREE.Vector3(pos[0], pos[1] + dist * 0.35, pos[2] + dist * 0.95);
+        // Position camera immediately if first render
+        camera.position.copy(targetCamPos.current);
+        camera.lookAt(targetLookAt.current);
       }
     }
-  }, [selectedNode, positionsRef]);
+  }, [selectedNode, positionsRef, camera]);
 
   // Reset view & Frame all triggers
   useEffect(() => {
@@ -109,12 +114,13 @@ function CameraController({
     }
   }, [resetViewTrigger, frameAllTrigger, applyBoundingSphereFraming]);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     if (targetCamPos.current && targetLookAt.current) {
-      camera.position.lerp(targetCamPos.current, 0.08);
+      const t = Math.min(1.0, delta * 6.0);
+      camera.position.lerp(targetCamPos.current, t);
       camera.lookAt(targetLookAt.current);
 
-      if (camera.position.distanceTo(targetCamPos.current) < 1.0) {
+      if (camera.position.distanceTo(targetCamPos.current) < 0.5) {
         targetCamPos.current = null;
         targetLookAt.current = null;
       }
@@ -461,11 +467,11 @@ function SkillNebulaLayer({
   return (
     <points geometry={pointsGeo}>
       <pointsMaterial
-        size={11}
+        size={20}
         sizeAttenuation
         map={particleTexture}
         transparent
-        opacity={0.82}
+        opacity={0.92}
         blending={THREE.AdditiveBlending}
         depthWrite={false}
         vertexColors
@@ -661,7 +667,7 @@ function OrbitRingsLayer({
       <lineBasicMaterial
         color="#818cf8"
         transparent
-        opacity={isSystemActive ? 0.38 : 0.09}
+        opacity={isSystemActive ? 0.65 : 0.22}
         blending={THREE.AdditiveBlending}
         depthWrite={false}
       />
@@ -743,6 +749,10 @@ function LabelsLayer({
 
       const sx = (v.x * 0.5 + 0.5) * size.width;
       const sy = (-v.y * 0.5 + 0.5) * size.height;
+
+      // Suppress labels that project behind top header/filter bar (top 100px) or side panel (right 400px when active)
+      if (sy < 100 || sy > size.height - 40 || sx < 30 || sx > size.width - 30) continue;
+      if (selectedNode && sx > size.width - 400) continue;
 
       const width = Math.min(180, Math.max(60, node.title.length * 7 + 16));
       const height = 24;

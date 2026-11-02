@@ -145,6 +145,38 @@ export const App: React.FC = () => {
     loadSnapshot();
   }, [loadSnapshot]);
 
+  // Support optional URL search params for programmatic visual QA and deep linking
+  useEffect(() => {
+    if (!data?.snapshot.nodes) return;
+    const params = new URLSearchParams(window.location.search);
+    const modeParam = params.get('mode');
+    if (modeParam === 'web' || modeParam === 'hybrid') {
+      setCurrentMode(modeParam);
+    }
+    const qualityParam = params.get('quality');
+    if (qualityParam === 'low' || qualityParam === 'medium' || qualityParam === 'high') {
+      setQuality(qualityParam);
+    }
+    const selectParam = params.get('select');
+    if (selectParam) {
+      const target = data.snapshot.nodes.find(
+        (n) => n.id === selectParam || n.title.toLowerCase() === selectParam.toLowerCase()
+      );
+      if (target) {
+        setSelectedNode(target);
+      }
+    }
+    const hoverParam = params.get('hover');
+    if (hoverParam) {
+      const target = data.snapshot.nodes.find(
+        (n) => n.id === hoverParam || n.title.toLowerCase() === hoverParam.toLowerCase()
+      );
+      if (target) {
+        setHoveredNode(target);
+      }
+    }
+  }, [data]);
+
   // Lookup map of nodes by ID for fast neighbor resolution
   const nodesById = useMemo(() => {
     const map = new Map<string, Node>();
