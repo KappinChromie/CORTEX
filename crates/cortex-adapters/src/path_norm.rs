@@ -46,7 +46,11 @@ pub fn project_node_id(normalized_path: &str) -> String {
 }
 
 /// Extracts a human-friendly project display name from a normalized path.
+/// If generic root (e.g. user home), labeled "Unaffiliated (home folder)".
 pub fn project_title_from_path(normalized_path: &str) -> String {
+    if is_generic_root_path(normalized_path) {
+        return "Unaffiliated (home folder)".to_string();
+    }
     if let Some(pos) = normalized_path.rfind('\\') {
         let name = &normalized_path[pos + 1..];
         if !name.is_empty() {
@@ -123,5 +127,21 @@ mod tests {
             assert!(is_generic_root_path(&norm_home));
         }
         assert!(!is_generic_root_path(r"c:\users\luche\documents\projects\cortex"));
+    }
+
+    #[test]
+    fn test_project_title_basename_and_generic_root() {
+        assert_eq!(
+            project_title_from_path(r"c:\users\luche\documents\projects\cortex"),
+            "cortex"
+        );
+        assert_eq!(
+            project_title_from_path(r"c:\users\luche\documents\projects\00000000\cortex"),
+            "cortex"
+        );
+        assert_eq!(
+            project_title_from_path("c:\\"),
+            "Unaffiliated (home folder)"
+        );
     }
 }
