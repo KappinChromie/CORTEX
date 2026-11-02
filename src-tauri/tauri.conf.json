@@ -4,14 +4,15 @@
   "version": "0.1.0",
   "identifier": "com.cortex.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm --prefix ../ui run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm --prefix ../ui run build",
     "frontendDist": "../ui/dist"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Cortex — Agent Brain Observatory",
         "width": 1400,
         "height": 900,

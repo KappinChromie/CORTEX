@@ -19,28 +19,62 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dataSource, setDataSource] = useState<'live' | 'demo'>('live');
+  const [frameAllTrigger, setFrameAllTrigger] = useState(0);
 
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [hoveredNode, setHoveredNode] = useState<Node | null>(null);
   const [currentMode, setCurrentMode] = useState<ViewMode>('web');
   const [isHealthOpen, setIsHealthOpen] = useState(false);
 
-  // Load snapshot from Tauri backend or fallback
+  // Load snapshot from Tauri backend, static public json, or fallback
   const loadSnapshot = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      // Attempt Tauri IPC call
+      // 1. Attempt native Tauri IPC call
       const res = await invoke<EnrichedGraphSnapshot>('get_graph_snapshot');
       setData(res);
-    } catch (err) {
-      console.warn('Tauri invoke failed or running outside Tauri desktop container:', err);
-      // Provide fallback mock dataset for standalone browser development
+      setDataSource('live');
+    } catch (ipcErr) {
+      console.warn('Tauri IPC unavailable (running in web browser or mock mode):', ipcErr);
+      // 2. Fall back to static snapshot.json if available
+      try {
+        const resp = await fetch('/snapshot.json');
+        if (resp.ok) {
+          const json = await resp.json();
+          setData(json);
+          setDataSource('demo');
+          return;
+        }
+      } catch (fetchErr) {
+        console.warn('Fetch /snapshot.json failed:', fetchErr);
+      }
+      // 3. Fall back to synthetic mock data
       setData(createFallbackMock());
+      setDataSource('demo');
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const handleFrameAll = useCallback(() => {
+    setFrameAllTrigger((prev) => prev + 1);
+  }, []);
+
+  // Listen for keyboard hotkey 'F' to trigger Frame All
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.key === 'f' || e.key === 'F') &&
+        !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)
+      ) {
+        handleFrameAll();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleFrameAll]);
 
   const handleRescan = async () => {
     try {
@@ -127,6 +161,10 @@ export const App: React.FC = () => {
         onSelectNode={setSelectedNode}
         onToggleHealth={() => setIsHealthOpen((prev) => !prev)}
         isHealthOpen={isHealthOpen}
+        dataSource={dataSource}
+        totalNodesCount={data?.snapshot.nodes.length || 0}
+        visibleNodesCount={data?.snapshot.nodes.length || 0}
+        onFrameAll={handleFrameAll}
       />
 
       {/* Main 3D Canvas */}
@@ -139,6 +177,7 @@ export const App: React.FC = () => {
           onSelectNode={setSelectedNode}
           hoveredNode={hoveredNode}
           onHoverNode={setHoveredNode}
+          frameAllTrigger={frameAllTrigger}
         />
       )}
 

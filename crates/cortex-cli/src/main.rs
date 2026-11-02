@@ -30,13 +30,21 @@ fn main() {
     // Execute discovery and scan across Antigravity, Hermes, and optional vaults
     let raw_snapshot = scan_all_sources(None, None, vec![]);
     let enriched = process_graph(raw_snapshot);
-    let snapshot = enriched.snapshot;
-
     // Persist to store in app data directory
     let store_path = CortexStore::default_path();
     if let Ok(store) = CortexStore::new(store_path.clone()) {
-        let _ = store.save_snapshot(&snapshot);
+        let _ = store.save_snapshot(&enriched.snapshot);
     }
+
+    // Also write to ui/public/snapshot.json if present for web preview fallback
+    let public_dir = std::path::Path::new("ui/public");
+    if public_dir.exists() {
+        if let Ok(json_str) = serde_json::to_string(&enriched) {
+            let _ = std::fs::write(public_dir.join("snapshot.json"), json_str);
+        }
+    }
+
+    let snapshot = enriched.snapshot;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

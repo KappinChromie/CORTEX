@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import type { ViewMode, Node } from '../types';
 import { ViewModeSwitch } from './ViewModeSwitch';
-import { Search, Activity, Sparkles } from 'lucide-react';
+import { Search, Activity, Sparkles, Focus } from 'lucide-react';
 
 interface HeaderBarProps {
   currentMode: ViewMode;
@@ -13,6 +13,10 @@ interface HeaderBarProps {
   onSelectNode: (node: Node) => void;
   onToggleHealth: () => void;
   isHealthOpen: boolean;
+  dataSource: 'live' | 'demo';
+  totalNodesCount: number;
+  visibleNodesCount: number;
+  onFrameAll: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -25,6 +29,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onSelectNode,
   onToggleHealth,
   isHealthOpen,
+  dataSource,
+  totalNodesCount,
+  visibleNodesCount,
+  onFrameAll,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -60,7 +68,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       }}
     >
       {/* Brand & Stats */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div
             style={{
@@ -86,171 +94,222 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           </div>
         </div>
 
-        {/* Live stats pills */}
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {/* Live / Demo Data Badge */}
+        <div
+          style={{
+            fontSize: '10px',
+            fontWeight: 700,
+            letterSpacing: '0.06em',
+            padding: '3px 8px',
+            borderRadius: '12px',
+            backgroundColor:
+              dataSource === 'live'
+                ? 'rgba(16, 185, 129, 0.18)'
+                : 'rgba(245, 158, 11, 0.18)',
+            color: dataSource === 'live' ? '#34d399' : '#fbbf24',
+            border: `1px solid ${
+              dataSource === 'live'
+                ? 'rgba(16, 185, 129, 0.4)'
+                : 'rgba(245, 158, 11, 0.4)'
+            }`,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+          }}
+        >
           <span
             style={{
-              fontSize: '11px',
-              backgroundColor: 'rgba(51, 65, 85, 0.6)',
-              color: '#38bdf8',
-              padding: '2px 8px',
-              borderRadius: '6px',
-              border: '1px solid rgba(56, 189, 248, 0.2)',
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              backgroundColor: dataSource === 'live' ? '#34d399' : '#fbbf24',
             }}
-          >
-            {nodes.length} nodes
-          </span>
-          <span
-            style={{
-              fontSize: '11px',
-              backgroundColor: 'rgba(51, 65, 85, 0.6)',
-              color: '#a855f7',
-              padding: '2px 8px',
-              borderRadius: '6px',
-              border: '1px solid rgba(168, 85, 247, 0.2)',
-            }}
-          >
-            {edgesCount} edges
-          </span>
-          {sharedProjectsCount > 0 && (
-            <span
-              style={{
-                fontSize: '11px',
-                backgroundColor: 'rgba(234, 179, 8, 0.15)',
-                color: '#eab308',
-                padding: '2px 8px',
-                borderRadius: '6px',
-                border: '1px solid rgba(234, 179, 8, 0.3)',
-              }}
-            >
-              {sharedProjectsCount} shared projects
-            </span>
-          )}
-          <span style={{ fontSize: '10px', color: '#64748b', marginLeft: 4 }}>
-            {scanTimeMs}ms
-          </span>
+          />
+          {dataSource === 'live' ? 'LIVE DATA' : 'DEMO DATA'}
         </div>
+
+        {/* Showing X of Y nodes counter */}
+        <span
+          style={{
+            fontSize: '11px',
+            backgroundColor: 'rgba(51, 65, 85, 0.6)',
+            color: '#38bdf8',
+            padding: '2px 8px',
+            borderRadius: '6px',
+            border: '1px solid rgba(56, 189, 248, 0.2)',
+            fontWeight: 500,
+          }}
+        >
+          Showing {visibleNodesCount} of {totalNodesCount} nodes
+        </span>
+
+        {/* Edges stats */}
+        <span
+          style={{
+            fontSize: '11px',
+            backgroundColor: 'rgba(51, 65, 85, 0.6)',
+            color: '#a855f7',
+            padding: '2px 8px',
+            borderRadius: '6px',
+            border: '1px solid rgba(168, 85, 247, 0.2)',
+          }}
+        >
+          {edgesCount} edges
+        </span>
+
+        {sharedProjectsCount > 0 && (
+          <span
+            style={{
+              fontSize: '11px',
+              backgroundColor: 'rgba(234, 179, 8, 0.15)',
+              color: '#eab308',
+              padding: '2px 8px',
+              borderRadius: '6px',
+              border: '1px solid rgba(234, 179, 8, 0.3)',
+            }}
+          >
+            ★ {sharedProjectsCount} shared projects
+          </span>
+        )}
+
+        {/* Frame All Button */}
+        <button
+          onClick={onFrameAll}
+          title="Fit camera to all nodes (Hotkey: F)"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            padding: '3px 9px',
+            backgroundColor: 'rgba(51, 65, 85, 0.6)',
+            border: '1px solid rgba(148, 163, 184, 0.25)',
+            borderRadius: '6px',
+            color: '#e2e8f0',
+            fontSize: '11px',
+            fontWeight: 500,
+            cursor: 'pointer',
+            transition: 'background 0.15s',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(71, 85, 105, 0.8)')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'rgba(51, 65, 85, 0.6)')}
+        >
+          <Focus size={12} color="#38bdf8" />
+          <span>Frame all (F)</span>
+        </button>
       </div>
 
-      {/* Center Layout Mode Switch */}
-      <ViewModeSwitch currentMode={currentMode} onChangeMode={onChangeMode} />
-
-      {/* Right Tools (Search + Sources) */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        {/* Search */}
-        <div style={{ position: 'relative' }}>
-          <div
+      {/* Center: Search with instant dropdown */}
+      <div style={{ position: 'relative', width: 280 }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            backgroundColor: 'rgba(30, 41, 59, 0.7)',
+            border: `1px solid ${isSearchFocused ? '#38bdf8' : 'rgba(148, 163, 184, 0.2)'}`,
+            borderRadius: '8px',
+            padding: '4px 10px',
+            gap: 8,
+            transition: 'border-color 0.2s',
+          }}
+        >
+          <Search size={14} color="#94a3b8" />
+          <input
+            type="text"
+            placeholder="Search nodes, skills, tools..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => setIsSearchFocused(true)}
+            onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              backgroundColor: 'rgba(30, 41, 59, 0.8)',
-              borderRadius: '6px',
-              border: '1px solid rgba(148, 163, 184, 0.2)',
-              padding: '4px 8px',
-              gap: 6,
-              width: 220,
+              background: 'transparent',
+              border: 'none',
+              outline: 'none',
+              color: '#f8fafc',
+              fontSize: '12px',
+              width: '100%',
             }}
-          >
-            <Search size={14} color="#94a3b8" />
-            <input
-              type="text"
-              placeholder="Search graph..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onFocus={() => setIsSearchFocused(true)}
-              onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
-              style={{
-                background: 'none',
-                border: 'none',
-                outline: 'none',
-                color: '#f8fafc',
-                fontSize: '12px',
-                width: '100%',
-              }}
-            />
-          </div>
-
-          {/* Search Dropdown */}
-          {isSearchFocused && searchResults.length > 0 && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 36,
-                right: 0,
-                width: 280,
-                backgroundColor: 'rgba(15, 23, 42, 0.96)',
-                backdropFilter: 'blur(16px)',
-                border: '1px solid rgba(148, 163, 184, 0.2)',
-                borderRadius: '8px',
-                padding: '4px',
-                zIndex: 60,
-                boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
-              }}
-            >
-              {searchResults.map((result) => (
-                <div
-                  key={result.id}
-                  onMouseDown={() => {
-                    onSelectNode(result);
-                    setSearchQuery('');
-                  }}
-                  style={{
-                    padding: '6px 10px',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    color: '#f1f5f9',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = 'rgba(51, 65, 85, 0.8)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                >
-                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {result.title}
-                  </div>
-                  <span
-                    style={{
-                      fontSize: '9px',
-                      backgroundColor: 'rgba(100, 116, 139, 0.3)',
-                      color: '#94a3b8',
-                      padding: '1px 5px',
-                      borderRadius: '4px',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {result.kind}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+          />
         </div>
 
-        {/* Source Health Button */}
+        {/* Dropdown results */}
+        {isSearchFocused && searchResults.length > 0 && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 40,
+              left: 0,
+              right: 0,
+              backgroundColor: 'rgba(15, 23, 42, 0.96)',
+              backdropFilter: 'blur(16px)',
+              border: '1px solid rgba(148, 163, 184, 0.2)',
+              borderRadius: '8px',
+              overflow: 'hidden',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+              zIndex: 100,
+            }}
+          >
+            {searchResults.map((n) => (
+              <div
+                key={n.id}
+                onMouseDown={() => {
+                  onSelectNode(n);
+                  setSearchQuery('');
+                }}
+                style={{
+                  padding: '8px 12px',
+                  cursor: 'pointer',
+                  borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(51, 65, 85, 0.5)')}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+              >
+                <div>
+                  <div style={{ fontSize: '12px', fontWeight: 600 }}>{n.title}</div>
+                  <div style={{ fontSize: '10px', color: '#94a3b8' }}>{n.kind}</div>
+                </div>
+                <div
+                  style={{
+                    fontSize: '9px',
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    backgroundColor: 'rgba(255,255,255,0.08)',
+                    color: '#94a3b8',
+                  }}
+                >
+                  deg {n.degree}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Right: Pluggable View Mode Switch + Health Panel Trigger */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <ViewModeSwitch currentMode={currentMode} onChangeMode={onChangeMode} />
+
         <button
           onClick={onToggleHealth}
+          title="Source Health & Re-scan"
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            backgroundColor: isHealthOpen ? '#1e293b' : 'rgba(30, 41, 59, 0.6)',
-            border: '1px solid rgba(148, 163, 184, 0.2)',
-            borderRadius: '6px',
-            color: '#f8fafc',
-            padding: '6px 10px',
+            padding: '6px 12px',
+            backgroundColor: isHealthOpen ? 'rgba(56, 189, 248, 0.2)' : 'rgba(51, 65, 85, 0.5)',
+            border: `1px solid ${isHealthOpen ? '#38bdf8' : 'rgba(148, 163, 184, 0.2)'}`,
+            borderRadius: '8px',
+            color: isHealthOpen ? '#38bdf8' : '#f8fafc',
             fontSize: '12px',
-            fontWeight: 500,
             cursor: 'pointer',
+            transition: 'all 0.2s',
           }}
         >
-          <Activity size={14} color="#38bdf8" />
-          <span>Sources</span>
+          <Activity size={14} color={isHealthOpen ? '#38bdf8' : '#94a3b8'} />
+          <span>Health ({scanTimeMs}ms)</span>
         </button>
       </div>
     </div>

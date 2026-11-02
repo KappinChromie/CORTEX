@@ -496,4 +496,58 @@ mod tests {
         assert_eq!(loaded.nodes[0].title, "Test Project");
         assert_eq!(loaded.edges.len(), 1);
     }
+
+    #[test]
+    fn test_load_real_store_if_present() {
+        let path = CortexStore::default_path();
+        if path.exists() {
+            let store = CortexStore::new(path).unwrap();
+            let snap = store.get_snapshot().unwrap();
+            println!("Loaded real store snapshot nodes: {}, edges: {}", snap.nodes.len(), snap.edges.len());
+            assert!(snap.nodes.len() > 300);
+        }
+    }
+
+    #[test]
+    fn test_snapshot_node_count_equals_store() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("count-test-store.db");
+        let store = CortexStore::new(db_path).unwrap();
+
+        let mut nodes = Vec::new();
+        for i in 0..120 {
+            nodes.push(Node {
+                id: format!("test_node:{i}"),
+                source_id: "synthetic".into(),
+                kind: NodeKind::Skill,
+                title: format!("Synthetic Skill {i}"),
+                body_preview: "preview".into(),
+                path: None,
+                tags: vec!["tag1".into(), "tag2".into()],
+                created_at: Some(Utc::now()),
+                modified_at: None,
+                last_active_at: None,
+                access_count: 1,
+                pinned: false,
+                degree: 0,
+                importance: 0.5,
+                freshness: 0.5,
+                metadata: serde_json::json!({}),
+            });
+        }
+
+        let snapshot = GraphSnapshot {
+            nodes,
+            edges: vec![],
+            events: vec![],
+            sources: vec![],
+            timestamp_stats: TimestampStats::default(),
+            shared_projects: vec![],
+        };
+
+        store.save_snapshot(&snapshot).unwrap();
+        let loaded = store.get_snapshot().unwrap();
+
+        assert_eq!(loaded.nodes.len(), 120, "Snapshot node count must equal store node count");
+    }
 }

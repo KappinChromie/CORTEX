@@ -186,4 +186,54 @@ mod tests {
         assert!(enriched.positions.contains_key("n1"));
         assert!(enriched.positions.contains_key("n2"));
     }
+
+    #[test]
+    fn test_snapshot_positions_finite_and_not_identical() {
+        let mut nodes = Vec::new();
+        for i in 0..50 {
+            nodes.push(Node {
+                id: format!("node:{i}"),
+                source_id: "test".into(),
+                kind: if i % 2 == 0 { NodeKind::Project } else { NodeKind::Skill },
+                title: format!("Node {i}"),
+                body_preview: "".into(),
+                path: None,
+                tags: vec![],
+                created_at: None,
+                modified_at: None,
+                last_active_at: None,
+                access_count: 0,
+                pinned: false,
+                degree: 0,
+                importance: 0.0,
+                freshness: 0.0,
+                metadata: serde_json::Value::Null,
+            });
+        }
+
+        let snapshot = GraphSnapshot {
+            nodes,
+            edges: vec![],
+            events: vec![],
+            sources: vec![],
+            timestamp_stats: TimestampStats::default(),
+            shared_projects: vec![],
+        };
+
+        let enriched = process_graph(snapshot);
+        assert_eq!(enriched.positions.len(), 50);
+
+        let mut all_points = Vec::new();
+        for (id, pos) in &enriched.positions {
+            assert!(pos[0].is_finite(), "X position for {id} is not finite");
+            assert!(pos[1].is_finite(), "Y position for {id} is not finite");
+            assert!(pos[2].is_finite(), "Z position for {id} is not finite");
+            all_points.push(*pos);
+        }
+
+        // Verify points are not all identical
+        let p0 = all_points[0];
+        let identical_count = all_points.iter().filter(|p| **p == p0).count();
+        assert!(identical_count < 5, "Too many identical positions detected");
+    }
 }
