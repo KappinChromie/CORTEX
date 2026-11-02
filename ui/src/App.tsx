@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type {
   EnrichedGraphSnapshot,
   Node,
@@ -7,19 +8,28 @@ import type {
   ViewMode,
   DataSource,
   LinksMode,
+  Event,
 } from './types';
 import { WebLayoutEngine } from './layouts/webLayout';
+import {
+  TimelineLayoutEngine,
+  computeActivityHistogram,
+} from './layouts/timelineLayout';
 import { GraphCanvas3D } from './components/GraphCanvas3D';
 import { HeaderBar } from './components/HeaderBar';
 import { FilterBar } from './components/FilterBar';
 import { SidePanel } from './components/SidePanel';
 import { SourceHealthPanel } from './components/SourceHealthPanel';
 import { PerformanceOverlay, type PerformanceStats } from './components/PerformanceOverlay';
+import { TimelineScrubber } from './components/TimelineScrubber';
+import { LiveFeedPanel } from './components/LiveFeedPanel';
+import { SettingsPanel, type AppSettings } from './components/SettingsPanel';
 import { generateSynthetic10kSnapshot } from './utils/syntheticData';
 import type { QualityLevel } from './components/PostProcessingManager';
 import { Loader2, AlertCircle } from 'lucide-react';
 
 const webLayout = new WebLayoutEngine();
+const timelineLayout = new TimelineLayoutEngine();
 
 export const App: React.FC = () => {
   const [data, setData] = useState<EnrichedGraphSnapshot | null>(null);
@@ -73,6 +83,31 @@ export const App: React.FC = () => {
     centerNodeId: string;
     hops: 1 | 2;
   } | null>(null);
+
+  // Live Activity & Presence
+  const [liveEvents, setLiveEvents] = useState<Event[]>([]);
+  const [lastAntigravityTime, setLastAntigravityTime] = useState<number>(Date.now());
+  const [lastHermesTime, setLastHermesTime] = useState<number>(0);
+  const [isFollowAgent, setIsFollowAgent] = useState<boolean>(false);
+
+  // Settings Panel
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [appSettings, setAppSettings] = useState<AppSettings>({
+    scan_on_launch: true,
+    enable_watchers: true,
+    enable_hermes_hook: false,
+    hermes_hook_port: 47821,
+    hermes_hook_secret: 'cortex_secret_47821',
+    quality: 'medium',
+    show_perf_overlay: false,
+  });
+
+  // Timeline & Replay Scrubber
+  const [timelineCurrentTime, setTimelineCurrentTime] = useState<number>(Date.now());
+  const [timelineIsPlaying, setTimelineIsPlaying] = useState<boolean>(false);
+  const [timelineSpeed, setTimelineSpeed] = useState<number>(100);
+  const [timelineHideAmbient, setTimelineHideAmbient] = useState<boolean>(false);
+  const [timelineCompressGaps, setTimelineCompressGaps] = useState<boolean>(false);
 
   // Section C camera control mode
   const [cameraControlMode, setCameraControlMode] = useState<'orbit' | 'fly'>('orbit');
@@ -166,9 +201,134 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleEmitTestEvent = useCallback(
+    async (nodeId?: string) => {
+      const targetNode = nodeId
+        ? data?.snapshot.nodes.find((n) => n.id === nodeId)
+        : data?.snapshot.nodes.find((n) => n.kind === 'conversation' || n.kind === 'session') ||
+          data?.snapshot.nodes[0];
+
+      const testNodeId = targetNode?.id;
+      const testSource = targetNode?.source_id || 'antigravity';
+      const detail = `Live tool execution: run_command [step #${Math.floor(
+        Math.random() * 50 + 1
+      )}]`;
+
+      try {
+        await invoke('emit_test_event', {
+          nodeId: testNodeId,
+          sourceId: testSource,
+          detail,
+        });
+      } catch {
+        const mockEv: Event = {
+          id: `mock-event-${Date.now()}`,
+          ts: new Date().toISOString(),
+          source_id: testSource,
+          node_id: testNodeId,
+          kind: 'tool_called',
+          detail,
+        };
+        setLiveEvents((prev) => [mockEv, ...prev.slice(0, 99)]);
+        if (testSource === 'hermes') setLastHermesTime(Date.now());
+        else setLastAntigravityTime(Date.now());
+      }
+    },
+    [data]
+  );
+
+  const handleSaveSettings = useCallback(async (newSettings: AppSettings) => {
+    setAppSettings(newSettings);
+    setQuality(newSettings.quality);
+    setIsPerfOpen(newSettings.show_perf_overlay);
+    try {
+      await invoke('save_settings', { newSettings });
+    } catch (err) {
+      console.warn('Failed to persist settings via Tauri IPC:', err);
+    }
+  }, []);
+
+  const handleRelayout = useCallback(() => {
+    setFrameAllTrigger((f) => f + 1);
+  }, []);
+
+  // Set up Live IPC listeners & load initial settings
+  useEffect(() => {
+    let unlistenEvent: (() => void) | undefined;
+    let unlistenDelta: (() => void) | undefined;
+
+    invoke<AppSettings>('load_settings')
+      .then((s) => {
+        if (s) {
+          setAppSettings(s);
+          if (s.quality) setQuality(s.quality);
+          if (s.show_perf_overlay) setIsPerfOpen(true);
+        }
+      })
+      .catch(() => {});
+
+    listen<Event>('agent:event', (eventPayload) => {
+      const ev = eventPayload.payload;
+      setLiveEvents((prev) => [ev, ...prev.slice(0, 99)]);
+      if (ev.source_id === 'hermes') {
+        setLastHermesTime(Date.now());
+      } else {
+        setLastAntigravityTime(Date.now());
+      }
+    })
+      .then((fn) => {
+        unlistenEvent = fn;
+      })
+      .catch(() => {});
+
+    listen<{
+      added_nodes: Node[];
+      updated_nodes: Node[];
+      new_events: Event[];
+    }>('graph:delta', (deltaPayload) => {
+      const delta = deltaPayload.payload;
+      if (delta.new_events && delta.new_events.length > 0) {
+        setLiveEvents((prev) => [...delta.new_events, ...prev].slice(0, 100));
+      }
+      if (delta.added_nodes && delta.added_nodes.length > 0) {
+        setData((prev) => {
+          if (!prev) return prev;
+          const map = new Map(prev.snapshot.nodes.map((n) => [n.id, n]));
+          for (const n of delta.added_nodes) {
+            map.set(n.id, n);
+          }
+          return {
+            ...prev,
+            snapshot: {
+              ...prev.snapshot,
+              nodes: Array.from(map.values()),
+            },
+          };
+        });
+      }
+    })
+      .then((fn) => {
+        unlistenDelta = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      if (unlistenEvent) unlistenEvent();
+      if (unlistenDelta) unlistenDelta();
+    };
+  }, []);
+
   useEffect(() => {
     loadSnapshot();
   }, [loadSnapshot]);
+
+  // Sync timeline current time with latest record
+  useEffect(() => {
+    if (data?.snapshot.timestamp_stats.latest_date) {
+      const t = new Date(data.snapshot.timestamp_stats.latest_date).getTime();
+      if (!isNaN(t)) setTimelineCurrentTime(t);
+    }
+  }, [data]);
 
   // Support optional URL search params & programmatic QA API for deep linking
   useEffect(() => {
@@ -199,7 +359,7 @@ export const App: React.FC = () => {
     const handleUrlOrPopstate = () => {
       const params = new URLSearchParams(window.location.search);
       const modeParam = params.get('mode');
-      if (modeParam === 'web' || modeParam === 'hybrid') {
+      if (modeParam === 'web' || modeParam === 'hybrid' || modeParam === 'timeline') {
         setCurrentMode(modeParam);
       }
       const qualityParam = params.get('quality');
@@ -257,6 +417,16 @@ export const App: React.FC = () => {
         setIsPerfOpen((prev) => (open !== undefined ? open : !prev)),
       toggleSynthetic,
       setQuality: (q: QualityLevel) => setQuality(q),
+      setMode: (m: ViewMode) => setCurrentMode(m),
+      emitTestEvent: handleEmitTestEvent,
+      toggleFollowAgent: () => setIsFollowAgent((f) => !f),
+      openSettings: () => setIsSettingsOpen(true),
+      closeSettings: () => setIsSettingsOpen(false),
+      seekTimeline: (t: number) => setTimelineCurrentTime(t),
+      toggleReplay: () => setTimelineIsPlaying((p) => !p),
+      setTimelineSpeed: (s: number) => setTimelineSpeed(s),
+      toggleHideAmbient: () => setTimelineHideAmbient((h) => !h),
+      toggleCompressGaps: () => setTimelineCompressGaps((c) => !c),
     };
 
     return () => {
@@ -354,6 +524,48 @@ export const App: React.FC = () => {
     );
   }, [data]);
 
+  // Compute 3D cylindrical timeline positions
+  const timelinePositions = useMemo(() => {
+    if (!data?.snapshot.nodes) return new Map<string, [number, number, number]>();
+    return timelineLayout.compute(
+      data.snapshot.nodes,
+      data.snapshot.edges,
+      data.snapshot.timestamp_stats,
+      undefined,
+      { compressGaps: timelineCompressGaps }
+    );
+  }, [data, timelineCompressGaps]);
+
+  const activityHistogram = useMemo(() => {
+    if (!data?.snapshot.nodes) return [];
+    return computeActivityHistogram(data.snapshot.nodes);
+  }, [data]);
+
+  const minTime = useMemo(() => {
+    if (data?.snapshot.timestamp_stats.earliest_date) {
+      const t = new Date(data.snapshot.timestamp_stats.earliest_date).getTime();
+      if (!isNaN(t)) return t;
+    }
+    return Date.now() - 30 * 24 * 3600 * 1000;
+  }, [data]);
+
+  const maxTime = useMemo(() => {
+    if (data?.snapshot.timestamp_stats.latest_date) {
+      const t = new Date(data.snapshot.timestamp_stats.latest_date).getTime();
+      if (!isNaN(t)) return t;
+    }
+    return Date.now();
+  }, [data]);
+
+  const isAntigravityActive = useMemo(
+    () => Date.now() - lastAntigravityTime < 60000,
+    [lastAntigravityTime]
+  );
+  const isHermesActive = useMemo(
+    () => lastHermesTime > 0 && Date.now() - lastHermesTime < 60000,
+    [lastHermesTime]
+  );
+
   // Neighbors of currently selected node
   const selectedNeighbors = useMemo(() => {
     if (!selectedNode || !data) return [];
@@ -446,6 +658,12 @@ export const App: React.FC = () => {
         onResetView={handleResetView}
         linksMode={linksMode}
         onChangeLinksMode={setLinksMode}
+        isAntigravityActive={isAntigravityActive}
+        isHermesActive={isHermesActive}
+        isFollowAgent={isFollowAgent}
+        onToggleFollowAgent={() => setIsFollowAgent((prev) => !prev)}
+        onRelayout={handleRelayout}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
       {/* Top Sub-Bar: Kind Filter Chips & Isolation HUD */}
@@ -495,8 +713,54 @@ export const App: React.FC = () => {
           }}
           dimmedNodeIds={isolatedNodeIds}
           onClearIsolation={() => setIsolatedState(null)}
+          timelinePositions={timelinePositions}
+          activeEvents={liveEvents}
+          isFollowAgent={isFollowAgent}
+          timelineCurrentTime={
+            currentMode === 'timeline' || timelineIsPlaying ? timelineCurrentTime : undefined
+          }
+          timelineHideAmbient={timelineHideAmbient}
         />
       )}
+
+      {/* Timeline Scrubber Bar (Docked at bottom center) */}
+      {(currentMode === 'timeline' || timelineIsPlaying) && (
+        <TimelineScrubber
+          minTime={minTime}
+          maxTime={maxTime}
+          currentTime={timelineCurrentTime}
+          isPlaying={timelineIsPlaying}
+          playbackSpeed={timelineSpeed}
+          histogram={activityHistogram}
+          hideAmbient={timelineHideAmbient}
+          compressGaps={timelineCompressGaps}
+          onTimeChange={setTimelineCurrentTime}
+          onTogglePlay={() => setTimelineIsPlaying((p) => !p)}
+          onSpeedChange={setTimelineSpeed}
+          onToggleHideAmbient={() => setTimelineHideAmbient((h) => !h)}
+          onToggleCompressGaps={() => setTimelineCompressGaps((c) => !c)}
+          onResetToStart={() => setTimelineCurrentTime(minTime)}
+        />
+      )}
+
+      {/* Live Feed Collapsible Panel (Bottom-left) */}
+      <LiveFeedPanel
+        events={liveEvents}
+        onSelectNode={(id) => {
+          const n = nodesById.get(id);
+          if (n) setSelectedNode(n);
+        }}
+        onClear={() => setLiveEvents([])}
+        onEmitTestEvent={handleEmitTestEvent}
+      />
+
+      {/* Settings Modal Dialog */}
+      <SettingsPanel
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={appSettings}
+        onSave={handleSaveSettings}
+      />
 
       {/* Floating HUD Controls (Bottom Left) */}
       <div

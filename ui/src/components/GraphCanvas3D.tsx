@@ -2,7 +2,7 @@ import React, { useRef, useMemo, useEffect, useState, useCallback } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import type { Node, Edge, ViewMode, HybridNodeLayout } from '../types';
+import type { Node, Edge, ViewMode, HybridNodeLayout, Event } from '../types';
 import {
   getNodeColor,
   getNodeSize,
@@ -48,6 +48,11 @@ interface GraphCanvas3DProps {
   onDoubleClickNode?: (node: Node, shiftKey: boolean) => void;
   dimmedNodeIds?: Set<string>;
   onClearIsolation?: () => void;
+  timelinePositions?: Map<string, [number, number, number]>;
+  activeEvents?: Event[];
+  isFollowAgent?: boolean;
+  timelineCurrentTime?: number;
+  timelineHideAmbient?: boolean;
 }
 
 // Camera controller that frames project stars and anchors centered and as large as possible
@@ -57,12 +62,16 @@ function CameraController({
   frameAllTrigger,
   resetViewTrigger,
   nodes,
+  isFollowAgent,
+  activeEvents,
 }: {
   selectedNode: Node | null;
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
   frameAllTrigger: number;
   resetViewTrigger: number;
   nodes: Node[];
+  isFollowAgent?: boolean;
+  activeEvents?: Event[];
 }) {
   const { camera } = useThree();
   const targetCamPos = useRef<THREE.Vector3 | null>(null);
@@ -147,6 +156,22 @@ function CameraController({
     }
   }, [selectedNode, positionsRef, camera]);
 
+  // Follow agent glide: smoothly track active agent events
+  const lastFollowedId = useRef<string | null>(null);
+  useEffect(() => {
+    if (isFollowAgent && activeEvents && activeEvents.length > 0) {
+      const latest = activeEvents[0];
+      if (latest && latest.node_id && latest.id !== lastFollowedId.current) {
+        lastFollowedId.current = latest.id;
+        const pos = positionsRef.current.get(latest.node_id);
+        if (pos) {
+          targetLookAt.current = new THREE.Vector3(pos[0], pos[1], pos[2]);
+          targetCamPos.current = new THREE.Vector3(pos[0], pos[1] + 35, pos[2] + 75);
+        }
+      }
+    }
+  }, [isFollowAgent, activeEvents, positionsRef]);
+
   // Reset view & Frame all triggers
   useEffect(() => {
     if (resetViewTrigger > 0 || frameAllTrigger > 0) {
@@ -221,6 +246,8 @@ function NodesLayer({
   onHoverNode,
   onDoubleClickNode,
   dimmedNodeIds,
+  timelineCurrentTime,
+  timelineHideAmbient,
 }: {
   nodes: Node[];
   positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
@@ -230,6 +257,8 @@ function NodesLayer({
   onHoverNode: (node: Node | null) => void;
   onDoubleClickNode?: (node: Node, shiftKey: boolean) => void;
   dimmedNodeIds?: Set<string>;
+  timelineCurrentTime?: number;
+  timelineHideAmbient?: boolean;
 }) {
   const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 24, 24), []);
   const meshRef = useRef<THREE.InstancedMesh>(null);
@@ -258,8 +287,38 @@ function NodesLayer({
       const isHovered = hoveredNode?.id === node.id;
       const isDimmed = dimmedNodeIds && dimmedNodeIds.size > 0 && !dimmedNodeIds.has(node.id);
 
+      if (timelineHideAmbient && node.is_ambient) {
+        tempScale.set(0.0001, 0.0001, 0.0001);
+        tempPos.set(pos[0], pos[1], pos[2]);
+        tempMatrix.compose(tempPos, tempQuat, tempScale);
+        mesh.setMatrixAt(i, tempMatrix);
+        continue;
+      }
+
+      let isHiddenByTime = false;
+      let isRecentlyActive = false;
+      if (timelineCurrentTime !== undefined && node.created_at) {
+        const createdMs = new Date(node.created_at).getTime();
+        if (createdMs > timelineCurrentTime) {
+          isHiddenByTime = true;
+        } else {
+          const ageHours = (timelineCurrentTime - createdMs) / (3600 * 1000);
+          if (ageHours < 4) {
+            isRecentlyActive = true;
+          }
+        }
+      }
+
+      if (isHiddenByTime) {
+        tempScale.set(0.0001, 0.0001, 0.0001);
+        tempPos.set(pos[0], pos[1], pos[2]);
+        tempMatrix.compose(tempPos, tempQuat, tempScale);
+        mesh.setMatrixAt(i, tempMatrix);
+        continue;
+      }
+
       const baseRadius = getNodeSize(node);
-      const scaleMult = isSelected ? 1.55 : isHovered ? 1.25 : 1.0;
+      const scaleMult = (isSelected ? 1.55 : isHovered ? 1.25 : 1.0) * (isRecentlyActive ? 1.35 : 1.0);
       const radius = isDimmed ? baseRadius * 0.75 : baseRadius * scaleMult;
 
       tempPos.set(pos[0], pos[1], pos[2]);
@@ -271,6 +330,8 @@ function NodesLayer({
       tempColor.set(baseHex);
       if (isDimmed) {
         tempColor.lerp(new THREE.Color('#1e293b'), 0.85);
+      } else if (isRecentlyActive) {
+        tempColor.set('#38bdf8');
       } else if (isSelected) {
         tempColor.offsetHSL(0, 0, 0.25);
       } else if (isHovered) {
@@ -1120,6 +1181,100 @@ function EdgesLayer({
   );
 }
 
+// Live Pulse Layer: expanding energy rings and traveling photons on live agent activity
+function LivePulsesLayer({
+  activeEvents,
+  positionsRef,
+}: {
+  activeEvents?: Event[];
+  positionsRef: React.MutableRefObject<Map<string, [number, number, number]>>;
+}) {
+  const pulsesRef = useRef<
+    Array<{
+      id: string;
+      nodeId: string;
+      startTime: number;
+      source: string;
+    }>
+  >([]);
+
+  const lastSeenId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!activeEvents || activeEvents.length === 0) return;
+    const latest = activeEvents[0];
+    if (latest && latest.node_id && latest.id !== lastSeenId.current) {
+      lastSeenId.current = latest.id;
+      pulsesRef.current.push({
+        id: latest.id,
+        nodeId: latest.node_id,
+        startTime: performance.now(),
+        source: latest.source_id,
+      });
+      if (pulsesRef.current.length > 20) {
+        pulsesRef.current.shift();
+      }
+    }
+  }, [activeEvents]);
+
+  const [, setTrigger] = useState(0);
+
+  useFrame(() => {
+    const now = performance.now();
+    const prevCount = pulsesRef.current.length;
+    pulsesRef.current = pulsesRef.current.filter((p) => now - p.startTime < 2000);
+    if (pulsesRef.current.length > 0 || prevCount > 0) {
+      setTrigger((t) => (t + 1) % 1000);
+    }
+  });
+
+  const now = performance.now();
+
+  return (
+    <group>
+      {pulsesRef.current.map((pulse) => {
+        const pos = positionsRef.current.get(pulse.nodeId);
+        if (!pos) return null;
+
+        const elapsed = now - pulse.startTime;
+        const progress = Math.min(1.0, elapsed / 2000.0);
+        const ringScale = 1.0 + progress * 6.5;
+        const opacity = Math.max(0, (1.0 - progress) * 0.95);
+        const isHermes = pulse.source === 'hermes';
+        const color = isHermes ? '#f59e0b' : '#06b6d4';
+
+        return (
+          <group key={pulse.id} position={pos}>
+            {/* Expanding outer ring */}
+            <mesh scale={[ringScale * 4.5, ringScale * 4.5, 1]} rotation={[Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[0.85, 1.0, 32]} />
+              <meshBasicMaterial
+                color={color}
+                transparent
+                opacity={opacity}
+                side={THREE.DoubleSide}
+                depthWrite={false}
+              />
+            </mesh>
+            {/* Concentric inner ring */}
+            <mesh scale={[ringScale * 2.5, ringScale * 2.5, 1]} rotation={[Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[0.8, 1.0, 24]} />
+              <meshBasicMaterial
+                color={color}
+                transparent
+                opacity={opacity * 0.7}
+                side={THREE.DoubleSide}
+                depthWrite={false}
+              />
+            </mesh>
+            <pointLight color={color} intensity={opacity * 4.0} distance={75} />
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
 export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
   nodes,
   edges,
@@ -1144,6 +1299,11 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
   onDoubleClickNode,
   dimmedNodeIds,
   onClearIsolation,
+  timelinePositions,
+  activeEvents,
+  isFollowAgent,
+  timelineCurrentTime,
+  timelineHideAmbient,
 }) => {
   const [, setMousePos] = useState({ x: 0, y: 0 });
 
@@ -1202,6 +1362,24 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
               fromPos[2] + (toPos[2] - fromPos[2]) * transitionFactor,
             ]);
           }
+        }
+      }
+    } else if (currentMode === 'timeline' && timelinePositions) {
+      for (const node of nodes) {
+        const toPos = timelinePositions.get(node.id) || [0, 0, 0];
+        if (isTransitioning.current) {
+          const fromPos = fromPositions.current.get(node.id);
+          if (fromPos) {
+            positionsRef.current.set(node.id, [
+              fromPos[0] + (toPos[0] - fromPos[0]) * transitionFactor,
+              fromPos[1] + (toPos[1] - fromPos[1]) * transitionFactor,
+              fromPos[2] + (toPos[2] - fromPos[2]) * transitionFactor,
+            ]);
+          } else {
+            positionsRef.current.set(node.id, toPos);
+          }
+        } else {
+          positionsRef.current.set(node.id, toPos);
         }
       }
     } else {
@@ -1277,6 +1455,8 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           frameAllTrigger={frameAllTrigger}
           resetViewTrigger={resetViewTrigger}
           nodes={nodes}
+          isFollowAgent={isFollowAgent}
+          activeEvents={activeEvents}
         />
 
         <FreeFlyController enabled={cameraControlMode === 'fly'} />
@@ -1288,6 +1468,9 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           positionsRef={positionsRef}
         />
 
+        {/* Live Event Pulses & Traveling Photons */}
+        <LivePulsesLayer activeEvents={activeEvents} positionsRef={positionsRef} />
+
         {/* Planets, Moons, Category Anchors, Persona Spheres */}
         <NodesLayer
           nodes={nodes}
@@ -1298,6 +1481,8 @@ export const GraphCanvas3D: React.FC<GraphCanvas3DProps> = ({
           onHoverNode={onHoverNode}
           onDoubleClickNode={onDoubleClickNode}
           dimmedNodeIds={dimmedNodeIds}
+          timelineCurrentTime={timelineCurrentTime}
+          timelineHideAmbient={timelineHideAmbient}
         />
 
         {/* Tool Hubs: Rotating technical toruses */}

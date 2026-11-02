@@ -1,7 +1,17 @@
 import React, { useState } from 'react';
 import type { ViewMode, Node, DataSource, LinksMode } from '../types';
 import { ViewModeSwitch } from './ViewModeSwitch';
-import { Search, Activity, Sparkles, Focus, RotateCcw, Share2 } from 'lucide-react';
+import {
+  Search,
+  Activity,
+  Sparkles,
+  Focus,
+  RotateCcw,
+  Share2,
+  Compass,
+  RefreshCw,
+  Settings as SettingsIcon,
+} from 'lucide-react';
 
 interface HeaderBarProps {
   currentMode: ViewMode;
@@ -24,6 +34,12 @@ interface HeaderBarProps {
   onResetView: () => void;
   linksMode?: LinksMode;
   onChangeLinksMode?: (mode: LinksMode) => void;
+  isAntigravityActive?: boolean;
+  isHermesActive?: boolean;
+  isFollowAgent?: boolean;
+  onToggleFollowAgent?: () => void;
+  onRelayout?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -47,6 +63,12 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onResetView,
   linksMode,
   onChangeLinksMode,
+  isAntigravityActive = true,
+  isHermesActive = false,
+  isFollowAgent = false,
+  onToggleFollowAgent,
+  onRelayout,
+  onOpenSettings,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -273,6 +295,64 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <span>Reset view</span>
         </button>
 
+        {/* Re-Layout Button */}
+        {onRelayout && (
+          <button
+            onClick={onRelayout}
+            title="Re-compute and animate full graph layout"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '3px 9px',
+              backgroundColor: 'rgba(51, 65, 85, 0.6)',
+              border: '1px solid rgba(148, 163, 184, 0.25)',
+              borderRadius: '6px',
+              color: '#e2e8f0',
+              fontSize: '11px',
+              fontWeight: 500,
+              cursor: 'pointer',
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'rgba(71, 85, 105, 0.8)')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'rgba(51, 65, 85, 0.6)')}
+          >
+            <RefreshCw size={12} color="#a78bfa" />
+            <span>Re-layout</span>
+          </button>
+        )}
+
+        {/* Follow Agent Camera Mode */}
+        {onToggleFollowAgent && (
+          <button
+            onClick={onToggleFollowAgent}
+            title={
+              isFollowAgent
+                ? 'Follow Agent: ON (camera glides to active agent events)'
+                : 'Follow Agent: OFF (click to automatically track agent)'
+            }
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '3px 9px',
+              backgroundColor: isFollowAgent ? 'rgba(6, 182, 212, 0.25)' : 'rgba(51, 65, 85, 0.6)',
+              border: `1px solid ${
+                isFollowAgent ? 'rgba(6, 182, 212, 0.6)' : 'rgba(148, 163, 184, 0.25)'
+              }`,
+              borderRadius: '6px',
+              color: isFollowAgent ? '#38bdf8' : '#e2e8f0',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            <Compass size={12} color={isFollowAgent ? '#38bdf8' : '#94a3b8'} />
+            <span>Follow</span>
+          </button>
+        )}
+
         {/* Quality Level Selector & Performance HUD */}
         {quality && (
           <button
@@ -454,8 +534,62 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         )}
       </div>
 
-      {/* Right: Pluggable View Mode Switch + Health Panel Trigger */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      {/* Right: Agent Presence + View Mode Switch + Health Panel + Settings */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {/* Agent Presence Dots */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '4px 10px',
+            backgroundColor: 'rgba(30, 41, 59, 0.6)',
+            borderRadius: '8px',
+            border: '1px solid rgba(148, 163, 184, 0.2)',
+            fontSize: '11px',
+          }}
+        >
+          {/* Antigravity Dot */}
+          <div
+            title={`Antigravity Agent: ${isAntigravityActive ? 'Active' : 'Idle'}`}
+            style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                backgroundColor: isAntigravityActive ? '#22c55e' : '#64748b',
+                boxShadow: isAntigravityActive ? '0 0 8px #22c55e' : 'none',
+              }}
+            />
+            <span style={{ color: isAntigravityActive ? '#f1f5f9' : '#64748b', fontSize: '10px' }}>
+              AGY
+            </span>
+          </div>
+
+          <span style={{ color: 'rgba(148, 163, 184, 0.3)' }}>|</span>
+
+          {/* Hermes Dot */}
+          <div
+            title={`Hermes Agent: ${isHermesActive ? 'Active' : 'Idle'}`}
+            style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                backgroundColor: isHermesActive ? '#f59e0b' : '#64748b',
+                boxShadow: isHermesActive ? '0 0 8px #f59e0b' : 'none',
+              }}
+            />
+            <span style={{ color: isHermesActive ? '#f1f5f9' : '#64748b', fontSize: '10px' }}>
+              HERMES
+            </span>
+          </div>
+        </div>
+
         <ViewModeSwitch currentMode={currentMode} onChangeMode={onChangeMode} />
 
         <button
@@ -478,6 +612,34 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <Activity size={14} color={isHealthOpen ? '#38bdf8' : '#94a3b8'} />
           <span>Health ({scanTimeMs}ms)</span>
         </button>
+
+        {onOpenSettings && (
+          <button
+            onClick={onOpenSettings}
+            title="Cortex Settings & Connect Hermes"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '6px 8px',
+              backgroundColor: 'rgba(51, 65, 85, 0.5)',
+              border: '1px solid rgba(148, 163, 184, 0.2)',
+              borderRadius: '8px',
+              color: '#94a3b8',
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = '#38bdf8';
+              e.currentTarget.style.borderColor = 'rgba(56, 189, 248, 0.5)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = '#94a3b8';
+              e.currentTarget.style.borderColor = 'rgba(148, 163, 184, 0.2)';
+            }}
+          >
+            <SettingsIcon size={14} />
+          </button>
+        )}
       </div>
     </div>
   );
