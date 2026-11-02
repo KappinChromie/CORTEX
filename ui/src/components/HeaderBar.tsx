@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import type { ViewMode, Node, DataSource } from '../types';
+import type { ViewMode, Node, DataSource, LinksMode } from '../types';
 import { ViewModeSwitch } from './ViewModeSwitch';
-import { Search, Activity, Sparkles, Focus, RotateCcw } from 'lucide-react';
+import { Search, Activity, Sparkles, Focus, RotateCcw, Share2 } from 'lucide-react';
 
 interface HeaderBarProps {
   currentMode: ViewMode;
@@ -22,6 +22,8 @@ interface HeaderBarProps {
   fpsStats?: { fps: number; frameTimeMs: number };
   onFrameAll: () => void;
   onResetView: () => void;
+  linksMode?: LinksMode;
+  onChangeLinksMode?: (mode: LinksMode) => void;
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
@@ -43,6 +45,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   fpsStats,
   onFrameAll,
   onResetView,
+  linksMode,
+  onChangeLinksMode,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -312,6 +316,51 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               {quality.toUpperCase()}
               {fpsStats ? ` · ${fpsStats.frameTimeMs.toFixed(0)}ms` : ''}
             </span>
+          </button>
+        )}
+
+        {/* Links Control: Off / Strong (default) / All */}
+        {linksMode && onChangeLinksMode && (
+          <button
+            onClick={() => {
+              const next: LinksMode =
+                linksMode === 'strong' ? 'all' : linksMode === 'all' ? 'off' : 'strong';
+              onChangeLinksMode(next);
+            }}
+            title={`Links: ${linksMode.toUpperCase()}\nClick to cycle:\n• STRONG (default): Top 30 cross-system links (tool hubs hidden)\n• ALL: Up to 400 visible links\n• OFF: Faint orbit rings only`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '3px 9px',
+              backgroundColor:
+                linksMode === 'strong'
+                  ? 'rgba(56, 189, 248, 0.2)'
+                  : linksMode === 'all'
+                  ? 'rgba(168, 85, 247, 0.2)'
+                  : 'rgba(100, 116, 139, 0.2)',
+              border: `1px solid ${
+                linksMode === 'strong'
+                  ? 'rgba(56, 189, 248, 0.4)'
+                  : linksMode === 'all'
+                  ? 'rgba(168, 85, 247, 0.4)'
+                  : 'rgba(100, 116, 139, 0.4)'
+              }`,
+              borderRadius: '6px',
+              color:
+                linksMode === 'strong'
+                  ? '#38bdf8'
+                  : linksMode === 'all'
+                  ? '#c084fc'
+                  : '#94a3b8',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            <Share2 size={12} />
+            <span>Links: {linksMode.toUpperCase()}</span>
           </button>
         )}
       </div>

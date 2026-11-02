@@ -132,6 +132,7 @@ export interface EnrichedGraphSnapshot {
 }
 
 export type ViewMode = 'web' | 'hybrid' | 'timeline';
+export type LinksMode = 'off' | 'strong' | 'all';
 
 export interface LayoutEngine {
   id: ViewMode;
