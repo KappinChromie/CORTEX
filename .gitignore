@@ -1,11 +1,11 @@
 # Rust build artifacts
 /target
-Cargo.lock
 
 # Node / UI build artifacts
 /ui/node_modules
 /ui/dist
 /ui/.vite
+node_modules/
 
 # OS files
 Thumbs.db
@@ -17,3 +17,5 @@ Thumbs.db
 .idea/
 *.log
 *.tmp
+*.db-wal
+*.db-shm
